@@ -79,12 +79,11 @@ def load_data():
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     
-                    # --- ÖZEL MATCHES (EŞLEŞME) AYIKLAMA ---
+                   # --- ÖZEL MATCHES (EŞLEŞME) AYIKLAMA ---
                     if key == 'matches':
                         # 1. "Sheet1" katmanını kaldır
                         raw_list = []
                         if isinstance(data, dict):
-                            # Sheet1, Data, Sheet vb. ne varsa ilk listeyi al
                             for k, v in data.items():
                                 if isinstance(v, list):
                                     raw_list = v
@@ -92,19 +91,32 @@ def load_data():
                         elif isinstance(data, list):
                             raw_list = data
                         
-                        # 2. Başlık satırlarını ve bozuk verileri temizle
+                        # 2. HAFIZALI OKUMA (FORWARD FILL)
                         clean_matches = []
+                        last_valid_name = None # Hafızadaki son isim
+
                         for item in raw_list:
-                            # Akademisyen İsmi (data veya Column1 olabilir)
-                            name = item.get('data') or item.get('academician_name')
-                            # Proje ID (Column3 veya project_id olabilir)
+                            # İsim verisini çek
+                            raw_name = item.get('data') or item.get('academician_name')
+                            
+                            # EĞER İSİM VARSA: Hafızayı güncelle
+                            if raw_name:
+                                last_valid_name = raw_name
+                            
+                            # EĞER İSİM YOKSA AMA HAFIZADA VARSA: Hafızadakini kullan
+                            # (Excel birleştirilmiş hücre mantığı)
+                            current_name = raw_name if raw_name else last_valid_name
+
+                            # Proje ID'sini çek
                             pid = str(item.get('Column3') or item.get('project_id') or "")
                             
-                            # Filtreleme: Header satırlarını atla
-                            if not name or not pid: continue
-                            if name in ["academician_name", "data"]: continue
+                            # Gereksiz Header satırlarını ele
+                            if not current_name or not pid: continue
+                            if current_name in ["academician_name", "data", "Sheet1"]: continue
                             if pid in ["matches", "project_id", "Column3"]: continue
                             
+                            # İsmi düzelterek veriye ekle
+                            item['data'] = current_name 
                             clean_matches.append(item)
                         
                         temp_db['MATCHES'] = clean_matches
