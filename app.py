@@ -130,30 +130,27 @@ def load_data():
 
 load_data()
 
-# --- RESİM URL OLUŞTURUCU ---
 def get_image_url_for_name(name):
     """
-    Akademisyen ismine göre web_data.json'dan Image_Path bilgisini çeker.
-    Dosya yolunu temizler ve sunucu linkini oluşturur.
+    Akademisyen ismine göre web_data.json'dan Image_Path bilgisini çeker
+    ve GitHub RAW linki döner (Render bağımsız).
     """
     norm_name = normalize_name(name)
-    base_url = "https://eu-portal-backend.onrender.com"  # Senin Backend Linkin
-    
+
+    GITHUB_RAW_BASE = (
+        "https://raw.githubusercontent.com/"
+        "Bilalmakara/eu-portal-backend/main"
+    )
+
     for w in DB['WEB_DATA']:
-        # İsim eşleştirmesi yap
         if normalize_name(w.get("Fullname")) == norm_name:
             path_val = w.get("Image_Path")
-            
             if path_val:
-                # 1. Yoldaki ters slahsları (\) düz slasha (/) çevir
-                # 2. Yolu '/' işaretinden böl ve EN SON parçayı (dosya adını) al
-                # Örn: "C:/Users/Data/akademisyen_fotograflari/atseyhan.jpg" -> "atseyhan.jpg"
                 filename = path_val.replace('\\', '/').split('/')[-1]
-                
-                # 3. Temiz linki oluştur
-                return f"{base_url}/akademisyen_fotograflari/{filename}"
-    
-    return None # Resim yoksa boş dön
+                return f"{GITHUB_RAW_BASE}/akademisyen_fotograflari/{filename}"
+
+    return None
+
     
 # --- 5. API ENDPOINTLERİ ---
 
