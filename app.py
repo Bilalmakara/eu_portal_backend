@@ -130,6 +130,26 @@ def load_data():
 
 load_data()
 
+# --- RESİM BULMA YARDIMCISI ---
+def get_image_url_for_name(name):
+    """İsimden resim URL'si oluşturur"""
+    norm_name = normalize_name(name)
+    
+    # Senin Backend Adresin
+    base_url = "https://eu-portal-backend.onrender.com" 
+    
+    for w in DB['WEB_DATA']:
+        if normalize_name(w.get("Fullname")) == norm_name:
+            path_val = w.get("Image_Path") # Örn: "akademisyen_fotograflari/atseyhan.jpg"
+            
+            if path_val:
+                # Yoldaki taksim işaretlerini düzelt ve son parçayı (dosya adını) al
+                # "akademisyen_fotograflari/atseyhan.jpg" -> "atseyhan.jpg" olur
+                filename = path_val.replace('\\', '/').split('/')[-1]
+                
+                # Linki oluştur ve döndür
+                return f"{base_url}/akademisyen_fotograflari/{filename}"
+    return None
 # --- 5. API ENDPOINTLERİ ---
 
 def index(request):
@@ -403,14 +423,24 @@ def api_network_graph(request):
     return JsonResponse({"nodes": nodes, "links": links})
 
 def serve_file(request, folder, filename):
+    # Klasör yolunu tam belirle (örn: /opt/render/.../akademisyen_fotograflari)
     folder_path = os.path.join(BASE_DIR, folder)
-    if os.path.exists(folder_path):
-        # 1. Klasördeki tüm dosyaları listele
-        for f in os.listdir(folder_path):
-            # 2. İsimleri küçük harfe çevirip karşılaştır
-            if f.lower() == filename.lower():
-                return FileResponse(open(os.path.join(folder_path, f), 'rb'))
-    return HttpResponse("Yok", status=404)
+    
+    # 1. Klasör yoksa hata dön
+    if not os.path.exists(folder_path):
+        return HttpResponse(f"Klasör bulunamadi: {folder}", status=404)
+
+    # 2. İstenen dosya adını küçük harfe çevir (örn: atseyhan.jpg)
+    target_name = filename.lower()
+    
+    # 3. Klasördeki GERÇEK dosyaları tek tek kontrol et
+    for f in os.listdir(folder_path):
+        # Diskteki dosya adı (örn: ATSEYHAN.JPG) -> atseyhan.jpg olur
+        if f.lower() == target_name:
+            # Eşleşme bulundu! Gerçek dosyayı (f) gönder
+            return FileResponse(open(os.path.join(folder_path, f), 'rb'))
+
+    return HttpResponse("Resim sunucuda yok", status=404)
 
 urlpatterns = [
     path('', index),
