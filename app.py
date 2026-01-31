@@ -161,6 +161,34 @@ def index(request):
     return HttpResponse("Backend Calisiyor. Test: /api/test/")
 
 @csrf_exempt
+def api_debug_images(request):
+    """Resim klasöründe ne var ne yok gösteren teşhis fonksiyonu"""
+    debug_info = {
+        "BASE_DIR": BASE_DIR,
+        "FOLDERS_IN_BASE": [f for f in os.listdir(BASE_DIR) if os.path.isdir(os.path.join(BASE_DIR, f))],
+        "TARGET_FOLDER_SEARCH": "akademisyen_fotograflari",
+        "FOUND_FILES": []
+    }
+    
+    # Klasörü bulmaya çalış
+    found_path = None
+    for f in os.listdir(BASE_DIR):
+        if f.lower() == "akademisyen_fotograflari":
+            found_path = os.path.join(BASE_DIR, f)
+            debug_info["MATCHED_FOLDER_NAME"] = f
+            break
+            
+    if found_path:
+        # İçindeki ilk 20 dosyayı listele
+        files = os.listdir(found_path)
+        debug_info["TOTAL_FILE_COUNT"] = len(files)
+        debug_info["FIRST_20_FILES"] = files[:20]
+    else:
+        debug_info["ERROR"] = "Klasor sunucuda hic bulunamadi!"
+        
+    return JsonResponse(debug_info, json_dumps_params={'indent': 4})
+    
+@csrf_exempt
 def api_test_data(request):
     status = {k: len(v) for k, v in DB.items()}
     status['FILE_PATHS'] = {k: find_file(v) for k, v in TARGET_FILES.items()}
@@ -400,12 +428,7 @@ def api_network_graph(request):
         if norm_col in added_nodes: continue
         
         # Resim Bul
-        img_url = ""
-        for w in DB['WEB_DATA']:
-            if normalize_name(w.get("Fullname")) == norm_col and w.get("Image_Path"):
-                clean_path = w['Image_Path'].replace('\\', '/').split('/')[-1] # Sadece dosya adını al
-                img_url = f"{base_url}/akademisyen_fotograflari/{clean_path}"
-                break
+        img_url = get_image_url_for_name(col_name) # <-- Tek satırda halleder
         
         nodes.append({"id": col_name, "group": 2, "img": img_url})
         links.append({"source": user, "target": col_name})
@@ -415,29 +438,33 @@ def api_network_graph(request):
 
 def serve_file(request, folder, filename):
     """
-    İstenen dosyayı klasörde arar.
-    Büyük/Küçük harf duyarlılığı olmadan dosyayı bulur ve sunar.
+    Hem klasörü hem de dosyayı büyük/küçük harf duyarlılığı olmadan bulur.
     """
-    # Klasör yolunu belirle (örn: /proje/akademisyen_fotograflari)
-    folder_path = os.path.join(BASE_DIR, folder)
+    # 1. Klasör İsmini Doğru Bul (Linux Uyumluluğu)
+    target_folder_name = folder.lower()
+    found_folder_path = None
     
-    # 1. Klasör yoksa hata dön
-    if not os.path.exists(folder_path):
-        return HttpResponse(f"Klasör bulunamadi: {folder}", status=404)
-
-    # 2. İstenen dosya adını küçük harfe çevir (örn: atseyhan.jpg)
-    target_name = filename.lower()
+    # Ana dizindeki klasörleri tara
+    if os.path.exists(os.path.join(BASE_DIR, folder)):
+        found_folder_path = os.path.join(BASE_DIR, folder)
+    else:
+        # Klasör bulunamadıysa, dizindeki tüm klasörlere bak (büyük/küçük harf eşleştir)
+        for f in os.listdir(BASE_DIR):
+            if os.path.isdir(os.path.join(BASE_DIR, f)):
+                if f.lower() == target_folder_name:
+                    found_folder_path = os.path.join(BASE_DIR, f)
+                    break
     
-    # 3. Klasördeki TÜM dosyaları tek tek kontrol et
-    for f in os.listdir(folder_path):
-        # Diskteki dosya adını da küçük harfe çevirip karşılaştır
-        if f.lower() == target_name:
-            # Eşleşme bulundu! Gerçek dosyayı aç ve gönder
-            file_path = os.path.join(folder_path, f)
-            return FileResponse(open(file_path, 'rb'))
+    if not found_folder_path:
+        return HttpResponse(f"Sunucuda '{folder}' adinda bir klasor bulunamadi. Lutfen GitHub'a yuklendiginden emin olun.", status=404)
 
-    # 4. Hiçbir şey bulunamazsa
-    return HttpResponse("Resim sunucuda yok", status=404)
+    # 2. Dosya İsmini Doğru Bul
+    target_filename = filename.lower()
+    for f in os.listdir(found_folder_path):
+        if f.lower() == target_filename:
+            return FileResponse(open(os.path.join(found_folder_path, f), 'rb'))
+
+    return HttpResponse(f"Dosya yok: {filename} (Klasor: {os.path.basename(found_folder_path)})", status=404)
 
 urlpatterns = [
     path('', index),
@@ -452,6 +479,7 @@ urlpatterns = [
     path('api/network-graph/', api_network_graph),
     path('images/<str:filename>', lambda r, filename: serve_file(r, 'images', filename)),
     path('akademisyen_fotograflari/<str:filename>', lambda r, filename: serve_file(r, 'akademisyen_fotograflari', filename)),
+    path('api/debug-images/', api_debug_images), # <-- BUNU EKLE
 ]
 
 application = get_wsgi_application()
