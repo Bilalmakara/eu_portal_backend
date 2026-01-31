@@ -16,7 +16,7 @@ from django.utils.deprecation import MiddlewareMixin
 # --- 1. AYARLAR ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Dosya İsimleri (Kod bunları otomatik arayıp bulacak)
+# Dosya İsimleri
 TARGET_FILES = {
     'decisions': 'decisions.json',
     'matches': 'n8n_akademisyen_proje_onerileri.json',
@@ -41,7 +41,7 @@ class CorsMiddleware(MiddlewareMixin):
 if not settings.configured:
     settings.configure(
         DEBUG=True,
-        SECRET_KEY='gizli-anahtar',
+        SECRET_KEY='gizli-anahtar-render-icin',
         ROOT_URLCONF=__name__,
         ALLOWED_HOSTS=['*'],
         INSTALLED_APPS=['django.contrib.staticfiles','django.contrib.contenttypes','django.contrib.auth'],
@@ -52,16 +52,14 @@ if not settings.configured:
 DB = {}
 
 def normalize_name(name):
-    """İsim eşleştirmesi için Türkçe karakterleri ve boşlukları temizler"""
+    """Türkçe karakter ve boşluk temizliği"""
     if not name: return ""
     return unicodedata.normalize('NFKD', str(name)).encode('ASCII', 'ignore').decode('utf-8').upper().strip()
 
 def find_file(filename):
-    """Büyük/Küçük harf duyarlılığı olmadan dosyayı bulur"""
+    """Dosyayı bul (Büyük/Küçük harf duyarsız)"""
     exact_path = os.path.join(BASE_DIR, filename)
     if os.path.exists(exact_path): return exact_path
-    
-    # Bulamazsa klasörü tara
     for f in os.listdir(BASE_DIR):
         if f.lower() == filename.lower():
             return os.path.join(BASE_DIR, f)
@@ -71,7 +69,6 @@ def load_data():
     global DB
     temp_db = { 'PROJECTS': {}, 'ACADEMICIANS': {}, 'MATCHES': [], 'FEEDBACK': [], 'WEB_DATA': [], 'MESSAGES': [], 'ANNOUNCEMENTS': [], 'LOGS': [], 'PASSWORDS': {} }
     
-    # 1. Dosyaları Yükle
     for key, filename in TARGET_FILES.items():
         path = find_file(filename)
         data_key = key.upper()
@@ -81,18 +78,49 @@ def load_data():
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    if key == 'passwords': temp_db['PASSWORDS'] = data
+                    
+                    # --- ÖZEL MATCHES (EŞLEŞME) AYIKLAMA ---
+                    if key == 'matches':
+                        # 1. "Sheet1" katmanını kaldır
+                        raw_list = []
+                        if isinstance(data, dict):
+                            # Sheet1, Data, Sheet vb. ne varsa ilk listeyi al
+                            for k, v in data.items():
+                                if isinstance(v, list):
+                                    raw_list = v
+                                    break
+                        elif isinstance(data, list):
+                            raw_list = data
+                        
+                        # 2. Başlık satırlarını ve bozuk verileri temizle
+                        clean_matches = []
+                        for item in raw_list:
+                            # Akademisyen İsmi (data veya Column1 olabilir)
+                            name = item.get('data') or item.get('academician_name')
+                            # Proje ID (Column3 veya project_id olabilir)
+                            pid = str(item.get('Column3') or item.get('project_id') or "")
+                            
+                            # Filtreleme: Header satırlarını atla
+                            if not name or not pid: continue
+                            if name in ["academician_name", "data"]: continue
+                            if pid in ["matches", "project_id", "Column3"]: continue
+                            
+                            clean_matches.append(item)
+                        
+                        temp_db['MATCHES'] = clean_matches
+
                     elif key == 'projects':
-                        # Projeleri ID'ye göre sözlük yap
-                        raw = data if isinstance(data, list) else []
-                        if isinstance(data, dict): raw = data.values() # Eğer dict gelirse
+                        raw = data if isinstance(data, list) else (data.values() if isinstance(data, dict) else [])
                         for p in raw:
                             pid = str(p.get("project_id", "")).strip()
                             if pid: temp_db['PROJECTS'][pid] = p
+
                     elif key == 'academicians':
-                        # Akademisyenleri Email'e göre sözlük yap
                         for p in data:
                             if p.get("Email"): temp_db['ACADEMICIANS'][p["Email"].strip().lower()] = p
+                    
+                    elif key == 'passwords':
+                        temp_db['PASSWORDS'] = data
                     else:
                         temp_db[data_key] = data
             except Exception as e:
@@ -105,13 +133,15 @@ load_data()
 # --- 5. API ENDPOINTLERİ ---
 
 def index(request):
-    return HttpResponse("Backend Calisiyor. Veri durumunu gormek icin: /api/test/ adresine git.")
+    return HttpResponse("Backend Calisiyor. Test: /api/test/")
 
 @csrf_exempt
 def api_test_data(request):
-    """Verilerin yüklenip yüklenmediğini kontrol eden ekran"""
     status = {k: len(v) for k, v in DB.items()}
     status['FILE_PATHS'] = {k: find_file(v) for k, v in TARGET_FILES.items()}
+    # Hata ayıklama için ilk 1 eşleşmeyi göster
+    if len(DB['MATCHES']) > 0:
+        status['SAMPLE_MATCH'] = DB['MATCHES'][0]
     return JsonResponse(status, json_dumps_params={'indent': 4})
 
 @csrf_exempt
@@ -139,13 +169,11 @@ def api_admin_data(request):
     if request.method == "OPTIONS": return JsonResponse({})
     
     acc_list = []
-    # Eşleşme verisini normalize et (Hızlandırmak için)
-    matches_map = {} # İsim -> Sayı
+    # Hızlı eşleşme sayımı için map oluştur
+    matches_map = {} 
     
-    # MATCHES listesini analiz et
     for m in DB['MATCHES']:
-        # Olası isim alanları (n8n çıktısına göre değişebilir)
-        raw_name = m.get('data') or m.get('academician_name') or m.get('Column1')
+        raw_name = m.get('data') or m.get('academician_name')
         if raw_name:
             norm = normalize_name(raw_name)
             if norm not in matches_map: matches_map[norm] = []
@@ -155,10 +183,7 @@ def api_admin_data(request):
         name = acc.get("Fullname", "")
         norm_name = normalize_name(name)
         
-        # Eşleşmeleri bul
         my_matches = matches_map.get(norm_name, [])
-        
-        # En iyi skoru bul
         best_score = 0
         for m in my_matches:
             try:
@@ -166,7 +191,6 @@ def api_admin_data(request):
                 if s > best_score: best_score = s
             except: pass
             
-        # Resim bul (Web Data'dan)
         img = None
         for w in DB['WEB_DATA']:
             if normalize_name(w.get("Fullname")) == norm_name and w.get("Image_Path"):
@@ -203,8 +227,8 @@ def api_profile(request):
                 break
         if not acc: return JsonResponse({"error": "Bulunamadi"}, 404)
 
-        # Projeleri Bul
         projects = []
+        # Doğrudan DB['MATCHES'] içinde dönüyoruz
         for m in DB['MATCHES']:
             m_name = m.get('data') or m.get('academician_name')
             if normalize_name(m_name) == norm_name:
@@ -231,7 +255,7 @@ def api_profile(request):
         projects.sort(key=lambda x: x['score'], reverse=True)
         
         img_url = None
-        base_url = "https://eu-portal-backend.onrender.com"
+        base_url = "https://estu-portal-backend.onrender.com"
         for w in DB['WEB_DATA']:
             if normalize_name(w.get("Fullname")) == norm_name and w.get("Image_Path"):
                 img_url = f"{base_url}/{w['Image_Path'].replace('\\', '/')}"
@@ -255,9 +279,6 @@ def api_project_decision(request):
     if request.method == "OPTIONS": return JsonResponse({})
     try:
         d = json.loads(request.body)
-        acc = d.get("academician")
-        pid = d.get("projId")
-        # Basit ekleme
         DB['FEEDBACK'].append(d)
         with open(os.path.join(BASE_DIR, 'decisions.json'), 'w') as f:
             json.dump(DB['FEEDBACK'], f)
@@ -267,7 +288,6 @@ def api_project_decision(request):
 @csrf_exempt
 def api_top_projects(request):
     if request.method == "OPTIONS": return JsonResponse({})
-    # Basit Top Projects
     cnt = Counter()
     for m in DB['MATCHES']:
         pid = m.get('Column3') or m.get('project_id')
@@ -314,8 +334,13 @@ def api_messages(request):
         except: pass
     return JsonResponse([], safe=False)
 
+@csrf_exempt
+def api_network_graph(request):
+    if request.method == "OPTIONS": return JsonResponse({})
+    # Basit graph (Hata vermemesi için)
+    return JsonResponse({"nodes": [], "links": []})
+
 def serve_file(request, folder, filename):
-    # Klasör içini tara ve dosyayı bul (Büyük/Küçük harf duyarsız)
     folder_path = os.path.join(BASE_DIR, folder)
     if os.path.exists(folder_path):
         for f in os.listdir(folder_path):
@@ -325,7 +350,7 @@ def serve_file(request, folder, filename):
 
 urlpatterns = [
     path('', index),
-    path('api/test/', api_test_data), # <-- TEST İÇİN BUNU EKLEDİM
+    path('api/test/', api_test_data),
     path('api/login/', api_login),
     path('api/admin-data/', api_admin_data),
     path('api/profile/', api_profile),
@@ -333,6 +358,7 @@ urlpatterns = [
     path('api/top-projects/', api_top_projects),
     path('api/announcements/', api_announcements),
     path('api/messages/', api_messages),
+    path('api/network-graph/', api_network_graph),
     path('images/<str:filename>', lambda r, filename: serve_file(r, 'images', filename)),
     path('akademisyen_fotograflari/<str:filename>', lambda r, filename: serve_file(r, 'akademisyen_fotograflari', filename)),
 ]
