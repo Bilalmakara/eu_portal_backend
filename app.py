@@ -71,17 +71,14 @@ def load_data():
     
     for key, filename in TARGET_FILES.items():
         path = find_file(filename)
-        data_key = key.upper()
-        if key == 'matches': data_key = 'MATCHES'
         
         if path:
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     
-                   # --- ÖZEL MATCHES (EŞLEŞME) AYIKLAMA ---
+                    # --- 1. EŞLEŞMELERİ DÜZELT (FORWARD FILL) ---
                     if key == 'matches':
-                        # 1. "Sheet1" katmanını kaldır
                         raw_list = []
                         if isinstance(data, dict):
                             for k, v in data.items():
@@ -91,50 +88,41 @@ def load_data():
                         elif isinstance(data, list):
                             raw_list = data
                         
-                        # 2. HAFIZALI OKUMA (FORWARD FILL)
                         clean_matches = []
-                        last_valid_name = None # Hafızadaki son isim
-
+                        last_valid_name = None
                         for item in raw_list:
-                            # İsim verisini çek
                             raw_name = item.get('data') or item.get('academician_name')
-                            
-                            # EĞER İSİM VARSA: Hafızayı güncelle
-                            if raw_name:
-                                last_valid_name = raw_name
-                            
-                            # EĞER İSİM YOKSA AMA HAFIZADA VARSA: Hafızadakini kullan
-                            # (Excel birleştirilmiş hücre mantığı)
+                            if raw_name: last_valid_name = raw_name
                             current_name = raw_name if raw_name else last_valid_name
 
-                            # Proje ID'sini çek
                             pid = str(item.get('Column3') or item.get('project_id') or "")
-                            
-                            # Gereksiz Header satırlarını ele
                             if not current_name or not pid: continue
                             if current_name in ["academician_name", "data", "Sheet1"]: continue
                             if pid in ["matches", "project_id", "Column3"]: continue
                             
-                            # İsmi düzelterek veriye ekle
                             item['data'] = current_name 
                             clean_matches.append(item)
-                        
                         temp_db['MATCHES'] = clean_matches
 
+                    # --- 2. PROJELERİ SÖZLÜK YAP ---
                     elif key == 'projects':
                         raw = data if isinstance(data, list) else (data.values() if isinstance(data, dict) else [])
                         for p in raw:
                             pid = str(p.get("project_id", "")).strip()
                             if pid: temp_db['PROJECTS'][pid] = p
 
+                    # --- 3. AKADEMİSYENLERİ SÖZLÜK YAP ---
                     elif key == 'academicians':
                         for p in data:
                             if p.get("Email"): temp_db['ACADEMICIANS'][p["Email"].strip().lower()] = p
                     
-                    elif key == 'passwords':
-                        temp_db['PASSWORDS'] = data
+                    # --- 4. KARARLARI (FEEDBACK) YÜKLE (ÇOK ÖNEMLİ!) ---
+                    elif key == 'decisions':
+                        temp_db['FEEDBACK'] = data # Hata buradaydı, düzeltildi.
+                    
+                    # --- 5. DİĞERLERİNİ NORMAL YÜKLE ---
                     else:
-                        temp_db[data_key] = data
+                        temp_db[key.upper()] = data
             except Exception as e:
                 print(f"HATA - {filename}: {e}")
     
@@ -242,7 +230,6 @@ def api_profile(request):
         if not acc: return JsonResponse({"error": "Bulunamadi"}, 404)
 
         projects = []
-        # Doğrudan DB['MATCHES'] içinde dönüyoruz
         for m in DB['MATCHES']:
             m_name = m.get('data') or m.get('academician_name')
             if normalize_name(m_name) == norm_name:
@@ -250,6 +237,7 @@ def api_profile(request):
                 pd = DB['PROJECTS'].get(pid, {})
                 
                 decision = "waiting"
+                # FEEDBACK listesinde ara
                 for fb in DB['FEEDBACK']:
                     if normalize_name(fb.get("academician")) == norm_name and str(fb.get("projId")) == pid:
                         decision = fb.get("decision")
@@ -268,11 +256,12 @@ def api_profile(request):
         
         projects.sort(key=lambda x: x['score'], reverse=True)
         
-        base_url = "https://eu-portal-backend.onrender.com"
+        # --- RESİM YOLU DÜZELTME (Kesin Çözüm) ---
         img_url = None
+        base_url = "https://eu-portal-backend.onrender.com"
         for w in DB['WEB_DATA']:
             if normalize_name(w.get("Fullname")) == norm_name and w.get("Image_Path"):
-                # "C:/Users/Resimler/ali.jpg" -> sadece "ali.jpg" al
+                # "C:\Users\..." veya "images/..." fark etmez, sadece dosya adını al
                 filename = w['Image_Path'].replace('\\', '/').split('/')[-1]
                 img_url = f"{base_url}/akademisyen_fotograflari/{filename}"
                 break
@@ -414,22 +403,14 @@ def api_network_graph(request):
     return JsonResponse({"nodes": nodes, "links": links})
 
 def serve_file(request, folder, filename):
-    # Klasör yolunu belirle
     folder_path = os.path.join(BASE_DIR, folder)
-    
-    # 1. Doğrudan dosyayı dene
-    target_path = os.path.join(folder_path, filename)
-    if os.path.exists(target_path):
-        return FileResponse(open(target_path, 'rb'))
-        
-    # 2. Bulamazsan klasördeki TÜM dosyaları tara (Büyük/Küçük harf veya uzantı hatası için)
     if os.path.exists(folder_path):
+        # 1. Klasördeki tüm dosyaları listele
         for f in os.listdir(folder_path):
-            # Dosya adları eşleşiyor mu? (ali.jpg == ALI.JPG)
+            # 2. İsimleri küçük harfe çevirip karşılaştır
             if f.lower() == filename.lower():
                 return FileResponse(open(os.path.join(folder_path, f), 'rb'))
-                
-    return HttpResponse("Resim Yok", status=404)
+    return HttpResponse("Yok", status=404)
 
 urlpatterns = [
     path('', index),
