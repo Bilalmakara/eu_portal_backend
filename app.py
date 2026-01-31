@@ -130,26 +130,31 @@ def load_data():
 
 load_data()
 
-# --- RESİM BULMA YARDIMCISI ---
+# --- RESİM URL OLUŞTURUCU ---
 def get_image_url_for_name(name):
-    """İsimden resim URL'si oluşturur"""
+    """
+    Akademisyen ismine göre web_data.json'dan Image_Path bilgisini çeker.
+    Dosya yolunu temizler ve sunucu linkini oluşturur.
+    """
     norm_name = normalize_name(name)
-    
-    # Senin Backend Adresin
-    base_url = "https://eu-portal-backend.onrender.com" 
+    base_url = "https://eu-portal-backend.onrender.com"  # Senin Backend Linkin
     
     for w in DB['WEB_DATA']:
+        # İsim eşleştirmesi yap
         if normalize_name(w.get("Fullname")) == norm_name:
-            path_val = w.get("Image_Path") # Örn: "akademisyen_fotograflari/atseyhan.jpg"
+            path_val = w.get("Image_Path")
             
             if path_val:
-                # Yoldaki taksim işaretlerini düzelt ve son parçayı (dosya adını) al
-                # "akademisyen_fotograflari/atseyhan.jpg" -> "atseyhan.jpg" olur
+                # 1. Yoldaki ters slahsları (\) düz slasha (/) çevir
+                # 2. Yolu '/' işaretinden böl ve EN SON parçayı (dosya adını) al
+                # Örn: "C:/Users/Data/akademisyen_fotograflari/atseyhan.jpg" -> "atseyhan.jpg"
                 filename = path_val.replace('\\', '/').split('/')[-1]
                 
-                # Linki oluştur ve döndür
+                # 3. Temiz linki oluştur
                 return f"{base_url}/akademisyen_fotograflari/{filename}"
-    return None
+    
+    return None # Resim yoksa boş dön
+    
 # --- 5. API ENDPOINTLERİ ---
 
 def index(request):
@@ -211,20 +216,14 @@ def api_admin_data(request):
                 if s > best_score: best_score = s
             except: pass
             
-        # Resim Bul (DÜZELTİLMİŞ)
-        img = None
-        for w in DB['WEB_DATA']:
-            if normalize_name(w.get("Fullname")) == norm_name and w.get("Image_Path"):
-                filename = w['Image_Path'].replace('\\', '/').split('/')[-1]
-                img = f"{base_url}/akademisyen_fotograflari/{filename}"
-                break
+        image = get_image_url_for_name(name)
         
         acc_list.append({
             "name": name,
             "email": email,
             "project_count": len(my_matches),
             "best_score": best_score,
-            "image": img
+            "image": image  # <-- BURAYI GÜNCELLE
         })
     
     return JsonResponse({
@@ -276,15 +275,7 @@ def api_profile(request):
         
         projects.sort(key=lambda x: x['score'], reverse=True)
         
-        # --- RESİM YOLU DÜZELTME (Kesin Çözüm) ---
-        img_url = None
-        base_url = "https://eu-portal-backend.onrender.com"
-        for w in DB['WEB_DATA']:
-            if normalize_name(w.get("Fullname")) == norm_name and w.get("Image_Path"):
-                # "C:\Users\..." veya "images/..." fark etmez, sadece dosya adını al
-                filename = w['Image_Path'].replace('\\', '/').split('/')[-1]
-                img_url = f"{base_url}/akademisyen_fotograflari/{filename}"
-                break
+        img_url = get_image_url_for_name(name)
         
         return JsonResponse({
             "profile": {
@@ -423,7 +414,11 @@ def api_network_graph(request):
     return JsonResponse({"nodes": nodes, "links": links})
 
 def serve_file(request, folder, filename):
-    # Klasör yolunu tam belirle (örn: /opt/render/.../akademisyen_fotograflari)
+    """
+    İstenen dosyayı klasörde arar.
+    Büyük/Küçük harf duyarlılığı olmadan dosyayı bulur ve sunar.
+    """
+    # Klasör yolunu belirle (örn: /proje/akademisyen_fotograflari)
     folder_path = os.path.join(BASE_DIR, folder)
     
     # 1. Klasör yoksa hata dön
@@ -433,13 +428,15 @@ def serve_file(request, folder, filename):
     # 2. İstenen dosya adını küçük harfe çevir (örn: atseyhan.jpg)
     target_name = filename.lower()
     
-    # 3. Klasördeki GERÇEK dosyaları tek tek kontrol et
+    # 3. Klasördeki TÜM dosyaları tek tek kontrol et
     for f in os.listdir(folder_path):
-        # Diskteki dosya adı (örn: ATSEYHAN.JPG) -> atseyhan.jpg olur
+        # Diskteki dosya adını da küçük harfe çevirip karşılaştır
         if f.lower() == target_name:
-            # Eşleşme bulundu! Gerçek dosyayı (f) gönder
-            return FileResponse(open(os.path.join(folder_path, f), 'rb'))
+            # Eşleşme bulundu! Gerçek dosyayı aç ve gönder
+            file_path = os.path.join(folder_path, f)
+            return FileResponse(open(file_path, 'rb'))
 
+    # 4. Hiçbir şey bulunamazsa
     return HttpResponse("Resim sunucuda yok", status=404)
 
 urlpatterns = [
