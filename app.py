@@ -4,6 +4,7 @@ import json
 import datetime
 import mimetypes
 from collections import Counter
+from django.utils.deprecation import MiddlewareMixin
 from django.conf import settings
 from django.core.management import execute_from_command_line
 from django.core.wsgi import get_wsgi_application
@@ -39,9 +40,16 @@ mimetypes.init()
 mimetypes.add_type("application/javascript", ".js", True)
 mimetypes.add_type("text/css", ".css", True)
 
-# app.py içindeki settings.configure bloğunu bul ve BUNUNLA DEĞİŞTİR:
+# app.py içindeki s.configure bloğunu bul ve BUNUNLA DEĞİŞTİR:
 
 if not settings.configured:
+    # --- MANUEL CORS MIDDLEWARE (KESİN ÇÖZÜM) ---
+    class CorsMiddleware(MiddlewareMixin):
+        def process_response(self, request, response):
+            response["Access-Control-Allow-Origin"] = "*"  # Herkese izin ver
+            response["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, X-CSRFToken"
+            return response
     settings.configure(
         DEBUG=False, # Canlıda False
         SECRET_KEY='gizli-anahtar-render-icin',
@@ -56,11 +64,11 @@ if not settings.configured:
         ],
         
         MIDDLEWARE=[
-            'corsheaders.middleware.CorsMiddleware', # <--- BU EN TEPEDE OLMALI (Çok Önemli!)
+            'app.CorsMiddleware',  # <--- EN BAŞA BUNU EKLE (Çok Önemli!)
             'django.middleware.security.SecurityMiddleware',
-            'whitenoise.middleware.WhiteNoiseMiddleware',
+            'django.contrib.sessions.middleware.SessionMiddleware', # Varsa kalsın
             'django.middleware.common.CommonMiddleware',
-            # Diğer middleware'ler...
+            # ... diğerleri kalsın ...
         ],
         
         # --- CORS AYARLARI (KAPIYI AÇAN KISIM) ---
@@ -198,6 +206,7 @@ def index(request):
 
 @csrf_exempt
 def api_login(request):
+    if request.method == "OPTIONS": return JsonResponse({})
     try:
         d = json.loads(request.body)
         u = d.get('username', '').strip().lower()
