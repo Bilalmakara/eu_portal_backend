@@ -203,10 +203,12 @@ def api_admin_data(request):
                 if s > best_score: best_score = s
             except: pass
             
+        # Resim Bul (DÜZELTİLMİŞ)
         img = None
         for w in DB['WEB_DATA']:
             if normalize_name(w.get("Fullname")) == norm_name and w.get("Image_Path"):
-                img = w['Image_Path'].replace('\\', '/')
+                filename = w['Image_Path'].replace('\\', '/').split('/')[-1]
+                img = f"{base_url}/akademisyen_fotograflari/{filename}"
                 break
         
         acc_list.append({
@@ -266,11 +268,13 @@ def api_profile(request):
         
         projects.sort(key=lambda x: x['score'], reverse=True)
         
-        img_url = None
         base_url = "https://eu-portal-backend.onrender.com"
+        img_url = None
         for w in DB['WEB_DATA']:
             if normalize_name(w.get("Fullname")) == norm_name and w.get("Image_Path"):
-                img_url = f"{base_url}/{w['Image_Path'].replace('\\', '/')}"
+                # "C:/Users/Resimler/ali.jpg" -> sadece "ali.jpg" al
+                filename = w['Image_Path'].replace('\\', '/').split('/')[-1]
+                img_url = f"{base_url}/akademisyen_fotograflari/{filename}"
                 break
         
         return JsonResponse({
@@ -410,12 +414,22 @@ def api_network_graph(request):
     return JsonResponse({"nodes": nodes, "links": links})
 
 def serve_file(request, folder, filename):
+    # Klasör yolunu belirle
     folder_path = os.path.join(BASE_DIR, folder)
+    
+    # 1. Doğrudan dosyayı dene
+    target_path = os.path.join(folder_path, filename)
+    if os.path.exists(target_path):
+        return FileResponse(open(target_path, 'rb'))
+        
+    # 2. Bulamazsan klasördeki TÜM dosyaları tara (Büyük/Küçük harf veya uzantı hatası için)
     if os.path.exists(folder_path):
         for f in os.listdir(folder_path):
+            # Dosya adları eşleşiyor mu? (ali.jpg == ALI.JPG)
             if f.lower() == filename.lower():
                 return FileResponse(open(os.path.join(folder_path, f), 'rb'))
-    return HttpResponse("Yok", status=404)
+                
+    return HttpResponse("Resim Yok", status=404)
 
 urlpatterns = [
     path('', index),
