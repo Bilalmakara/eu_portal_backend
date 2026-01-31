@@ -4,6 +4,7 @@ import json
 import mimetypes
 import datetime
 import unicodedata
+import re
 from collections import Counter
 from django.conf import settings
 from django.core.management import execute_from_command_line
@@ -13,10 +14,14 @@ from django.http import JsonResponse, HttpResponse, FileResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.deprecation import MiddlewareMixin
 
-# --- 1. AYARLAR ---
+# ==========================================
+# 1. AYARLAR VE SABİTLER
+# ==========================================
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Frontend'in resimleri çekebilmesi için Backend URL'i
+BASE_URL = "https://eu-portal-backend.onrender.com"
 
-# Dosya İsimleri
+# Dosya İsimleri (Kod bunları klasörde arayıp bulacak)
 TARGET_FILES = {
     'decisions': 'decisions.json',
     'matches': 'n8n_akademisyen_proje_onerileri.json',
@@ -29,7 +34,10 @@ TARGET_FILES = {
     'passwords': 'passwords.json'
 }
 
-# --- 2. MANUEL CORS MIDDLEWARE ---
+
+# ==========================================
+# 2. GÜVENLİK VE CORS AYARLARI
+# ==========================================
 class CorsMiddleware(MiddlewareMixin):
     def process_response(self, request, response):
         response["Access-Control-Allow-Origin"] = "*"
@@ -37,48 +45,99 @@ class CorsMiddleware(MiddlewareMixin):
         response["Access-Control-Allow-Headers"] = "*"
         return response
 
-# --- 3. DJANGO AYARLARI ---
+
 if not settings.configured:
     settings.configure(
         DEBUG=True,
-        SECRET_KEY='gizli-anahtar-render-icin',
+        SECRET_KEY='gizli-anahtar-render-icin-ozel',
         ROOT_URLCONF=__name__,
         ALLOWED_HOSTS=['*'],
-        INSTALLED_APPS=['django.contrib.staticfiles','django.contrib.contenttypes','django.contrib.auth'],
-        MIDDLEWARE=['app.CorsMiddleware','django.middleware.common.CommonMiddleware'],
+        INSTALLED_APPS=[
+            'django.contrib.staticfiles',
+            'django.contrib.contenttypes',
+            'django.contrib.auth',
+        ],
+        MIDDLEWARE=[
+            'app.CorsMiddleware',
+            'django.middleware.common.CommonMiddleware',
+        ],
     )
 
-# --- 4. AKILLI VERİ YÜKLEME ---
+# ==========================================
+# 3. YARDIMCI FONKSİYONLAR
+# ==========================================
 DB = {}
 
+
 def normalize_name(name):
-    """Türkçe karakter ve boşluk temizliği"""
+    """
+    İsim eşleştirmesi için temizlik yapar.
+    'Prof. Dr. Ahmet Şen' -> 'AHMET SEN'
+    """
     if not name: return ""
-    return unicodedata.normalize('NFKD', str(name)).encode('ASCII', 'ignore').decode('utf-8').upper().strip()
+    n = str(name).strip().upper()
+    # Ünvanları temizle
+    n = n.replace("PROF.", "").replace("DR.", "").replace("ARS.", "").replace("GOR.", "").replace("DOC.", "")
+    # Türkçe karakterleri İngilizceye çevir
+    n = n.replace('İ', 'I').replace('Ğ', 'G').replace('Ü', 'U').replace('Ş', 'S').replace('Ö', 'O').replace('Ç', 'C')
+    # Fazla boşlukları sil
+    return " ".join(n.split())
+
+
+def slugify_name(name):
+    """
+    Dosya isminden resim bulmak için (Fallback).
+    'Uğur Özdemir' -> 'ugurozdemir'
+    """
+    if not name: return ""
+    n = str(name).lower()
+    n = n.replace('ğ', 'g').replace('ü', 'u').replace('ş', 's').replace('ı', 'i').replace('ö', 'o').replace('ç', 'c')
+    # Sadece harf ve rakamları bırak
+    n = re.sub(r'[^a-z0-9]', '', n)
+    return n
+
 
 def find_file(filename):
-    """Dosyayı bul (Büyük/Küçük harf duyarsız)"""
+    """Klasördeki dosyayı büyük/küçük harf gözetmeksizin bulur"""
     exact_path = os.path.join(BASE_DIR, filename)
     if os.path.exists(exact_path): return exact_path
+
     for f in os.listdir(BASE_DIR):
         if f.lower() == filename.lower():
             return os.path.join(BASE_DIR, f)
     return None
 
+
+# ==========================================
+# 4. VERİ YÜKLEME (DATA LOADING)
+# ==========================================
 def load_data():
     global DB
-    temp_db = { 'PROJECTS': {}, 'ACADEMICIANS': {}, 'MATCHES': [], 'FEEDBACK': [], 'WEB_DATA': [], 'MESSAGES': [], 'ANNOUNCEMENTS': [], 'LOGS': [], 'PASSWORDS': {} }
-    
+    # Veri tabanı taslağı
+    temp_db = {
+        'PROJECTS': {}, 'ACADEMICIANS': {}, 'MATCHES': [],
+        'FEEDBACK': [], 'WEB_DATA': [], 'MESSAGES': [],
+        'ANNOUNCEMENTS': [], 'LOGS': [], 'PASSWORDS': {}
+    }
+
     for key, filename in TARGET_FILES.items():
         path = find_file(filename)
-        
+        data_key = key.upper()
+
+        # Özel Anahtar Eşleştirmeleri
+        if key == 'matches':
+            data_key = 'MATCHES'
+        elif key == 'decisions':
+            data_key = 'FEEDBACK'
+
         if path:
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
-                    
-                    # --- 1. EŞLEŞMELERİ DÜZELT (FORWARD FILL) ---
+
+                    # --- A. EŞLEŞME DOSYASI (EN KRİTİK KISIM) ---
                     if key == 'matches':
+                        # 1. Sheet yapısını çöz (Liste mi Dict mi?)
                         raw_list = []
                         if isinstance(data, dict):
                             for k, v in data.items():
@@ -87,143 +146,154 @@ def load_data():
                                     break
                         elif isinstance(data, list):
                             raw_list = data
-                        
+
+                        # 2. Forward Fill (Hafızalı Okuma)
                         clean_matches = []
-                        last_valid_name = None
+                        last_valid_name = None  # Hafıza
+
                         for item in raw_list:
-                            raw_name = item.get('data') or item.get('academician_name')
-                            if raw_name: last_valid_name = raw_name
+                            # İsim sütununu bul
+                            raw_name = item.get('data') or item.get('academician_name') or item.get('Column1')
+
+                            # İsim varsa hafızayı güncelle (En az 3 harf olsun)
+                            if raw_name and len(str(raw_name)) > 2:
+                                last_valid_name = raw_name
+
+                            # İsim yoksa hafızadan kullan
                             current_name = raw_name if raw_name else last_valid_name
 
+                            # Proje ID sütununu bul
                             pid = str(item.get('Column3') or item.get('project_id') or "")
+
+                            # Filtreleme (Header veya boş satırları at)
                             if not current_name or not pid: continue
-                            if current_name in ["academician_name", "data", "Sheet1"]: continue
-                            if pid in ["matches", "project_id", "Column3"]: continue
-                            
-                            item['data'] = current_name 
+                            check_name = normalize_name(current_name)
+                            if check_name in ["ACADEMICIANNAME", "DATA", "SHEET1", "COLUMN1", "MATCHES"]: continue
+                            if pid.lower() in ["matches", "project_id", "column3"]: continue
+
+                            # Temiz veriyi kaydet
+                            item['data'] = current_name
                             clean_matches.append(item)
+
                         temp_db['MATCHES'] = clean_matches
 
-                    # --- 2. PROJELERİ SÖZLÜK YAP ---
+                    # --- B. PROJELER ---
                     elif key == 'projects':
                         raw = data if isinstance(data, list) else (data.values() if isinstance(data, dict) else [])
                         for p in raw:
                             pid = str(p.get("project_id", "")).strip()
                             if pid: temp_db['PROJECTS'][pid] = p
 
-                    # --- 3. AKADEMİSYENLERİ SÖZLÜK YAP ---
+                    # --- C. AKADEMİSYENLER ---
                     elif key == 'academicians':
                         for p in data:
                             if p.get("Email"): temp_db['ACADEMICIANS'][p["Email"].strip().lower()] = p
-                    
-                    # --- 4. KARARLARI (FEEDBACK) YÜKLE (ÇOK ÖNEMLİ!) ---
+
+                    # --- D. KARARLAR (FEEDBACK) ---
                     elif key == 'decisions':
-                        temp_db['FEEDBACK'] = data # Hata buradaydı, düzeltildi.
-                    
-                    # --- 5. DİĞERLERİNİ NORMAL YÜKLE ---
+                        temp_db['FEEDBACK'] = data
+
+                    # --- E. DİĞERLERİ ---
                     else:
-                        temp_db[key.upper()] = data
+                        temp_db[data_key] = data
+
             except Exception as e:
                 print(f"HATA - {filename}: {e}")
-    
+
     DB = temp_db
 
+
+# Uygulama başlarken verileri yükle
 load_data()
 
+
+# ==========================================
+# 5. RESİM BULUCU (IMAGE FINDER)
+# ==========================================
 def get_image_url_for_name(name):
     """
-    Akademisyen ismine göre web_data.json'dan Image_Path bilgisini çeker
-    ve GitHub RAW linki döner (Render bağımsız).
+    İki aşamalı resim bulma:
+    1. web_data.json'daki yola bak.
+    2. Bulamazsa isimden tahmin et (ugurozdemir.jpg).
     """
     norm_name = normalize_name(name)
+    slug_name = slugify_name(name)  # Örn: Ali Veli -> aliveli
 
-    GITHUB_RAW_BASE = (
-        "https://raw.githubusercontent.com/"
-        "Bilalmakara/eu-portal-backend/main"
-    )
-
+    # 1. Yöntem: Web Data
     for w in DB['WEB_DATA']:
         if normalize_name(w.get("Fullname")) == norm_name:
             path_val = w.get("Image_Path")
             if path_val:
+                # "C:\Users\...\akademisyen_fotograflari\foto.jpg" -> "foto.jpg"
                 filename = path_val.replace('\\', '/').split('/')[-1]
-                return f"{GITHUB_RAW_BASE}/akademisyen_fotograflari/{filename}"
+                return f"{BASE_URL}/akademisyen_fotograflari/{filename}"
 
-    return None
+    # 2. Yöntem: Tahmin (Fallback)
+    return f"{BASE_URL}/akademisyen_fotograflari/{slug_name}.jpg"
 
-    
-# --- 5. API ENDPOINTLERİ ---
+
+# ==========================================
+# 6. API ENDPOINTLERİ (VIEWS)
+# ==========================================
 
 def index(request):
-    return HttpResponse("Backend Calisiyor. Test: /api/test/")
+    return HttpResponse("Backend V3.0 (Full Fix) Calisiyor. Test: /api/test/")
+
 
 @csrf_exempt
-def api_debug_images(request):
-    """Resim klasöründe ne var ne yok gösteren teşhis fonksiyonu"""
-    debug_info = {
-        "BASE_DIR": BASE_DIR,
-        "FOLDERS_IN_BASE": [f for f in os.listdir(BASE_DIR) if os.path.isdir(os.path.join(BASE_DIR, f))],
-        "TARGET_FOLDER_SEARCH": "akademisyen_fotograflari",
-        "FOUND_FILES": []
-    }
-    
-    # Klasörü bulmaya çalış
-    found_path = None
-    for f in os.listdir(BASE_DIR):
-        if f.lower() == "akademisyen_fotograflari":
-            found_path = os.path.join(BASE_DIR, f)
-            debug_info["MATCHED_FOLDER_NAME"] = f
-            break
-            
-    if found_path:
-        # İçindeki ilk 20 dosyayı listele
-        files = os.listdir(found_path)
-        debug_info["TOTAL_FILE_COUNT"] = len(files)
-        debug_info["FIRST_20_FILES"] = files[:20]
-    else:
-        debug_info["ERROR"] = "Klasor sunucuda hic bulunamadi!"
-        
-    return JsonResponse(debug_info, json_dumps_params={'indent': 4})
-    
-@csrf_exempt
 def api_test_data(request):
-    status = {k: len(v) for k, v in DB.items()}
-    status['FILE_PATHS'] = {k: find_file(v) for k, v in TARGET_FILES.items()}
-    # Hata ayıklama için ilk 1 eşleşmeyi göster
-    if len(DB['MATCHES']) > 0:
-        status['SAMPLE_MATCH'] = DB['MATCHES'][0]
+    """Sistem sağlık kontrolü"""
+    check_name = request.GET.get('name', '')
+    status = {
+        "DB_COUNTS": {k: len(v) for k, v in DB.items()},
+        "SAMPLE_MATCH": DB['MATCHES'][0] if len(DB['MATCHES']) > 0 else "Veri Yok",
+    }
+    if check_name:
+        status['NAME_CHECK'] = {
+            "Input": check_name,
+            "Normalized": normalize_name(check_name),
+            "Slugified": slugify_name(check_name),
+            "Predicted_URL": get_image_url_for_name(check_name)
+        }
     return JsonResponse(status, json_dumps_params={'indent': 4})
+
 
 @csrf_exempt
 def api_login(request):
+    """Giriş İşlemleri"""
     if request.method == "OPTIONS": return JsonResponse({})
     try:
         d = json.loads(request.body)
         u = d.get('username', '').lower().strip()
         p = d.get('password', '').strip()
-        
+
+        # Admin
         if u == "admin" and p == "12345":
             return JsonResponse({"status": "success", "role": "admin", "name": "Yönetici"})
-            
+
+        # Akademisyen
         if u in DB['ACADEMICIANS']:
+            # Şifre yoksa email prefixini kullan (örn: adeniz)
             real_pass = DB['PASSWORDS'].get(u, u.split('@')[0])
             if p == real_pass:
                 acc = DB['ACADEMICIANS'][u]
                 return JsonResponse({"status": "success", "role": "academician", "name": acc["Fullname"]})
-        
+
         return JsonResponse({"status": "error", "message": "Hatali giris"}, status=401)
-    except: return JsonResponse({}, 400)
+    except:
+        return JsonResponse({}, 400)
+
 
 @csrf_exempt
 def api_admin_data(request):
+    """Yönetici Paneli Verileri"""
     if request.method == "OPTIONS": return JsonResponse({})
-    
+
     acc_list = []
-    # Hızlı eşleşme sayımı için map oluştur
-    matches_map = {} 
-    
+    # Hız için map oluştur
+    matches_map = {}
     for m in DB['MATCHES']:
-        raw_name = m.get('data') or m.get('academician_name')
+        raw_name = m.get('data')
         if raw_name:
             norm = normalize_name(raw_name)
             if norm not in matches_map: matches_map[norm] = []
@@ -232,25 +302,24 @@ def api_admin_data(request):
     for email, acc in DB['ACADEMICIANS'].items():
         name = acc.get("Fullname", "")
         norm_name = normalize_name(name)
-        
+
         my_matches = matches_map.get(norm_name, [])
         best_score = 0
         for m in my_matches:
             try:
                 s = int(m.get('Column7') or m.get('score') or 0)
                 if s > best_score: best_score = s
-            except: pass
-            
-        image = get_image_url_for_name(name)
-        
+            except:
+                pass
+
         acc_list.append({
             "name": name,
             "email": email,
             "project_count": len(my_matches),
             "best_score": best_score,
-            "image": image  # <-- BURAYI GÜNCELLE
+            "image": get_image_url_for_name(name)
         })
-    
+
     return JsonResponse({
         "academicians": acc_list,
         "feedbacks": DB['FEEDBACK'],
@@ -258,14 +327,17 @@ def api_admin_data(request):
         "announcements": DB['ANNOUNCEMENTS']
     })
 
+
 @csrf_exempt
 def api_profile(request):
+    """Akademisyen Profil ve Projeleri"""
     if request.method == "OPTIONS": return JsonResponse({})
     try:
         body = json.loads(request.body)
         name = body.get('name')
         norm_name = normalize_name(name)
-        
+
+        # 1. Akademisyen Bilgisi
         acc = None
         for email, p in DB['ACADEMICIANS'].items():
             if normalize_name(p.get("Fullname")) == norm_name:
@@ -273,20 +345,28 @@ def api_profile(request):
                 break
         if not acc: return JsonResponse({"error": "Bulunamadi"}, 404)
 
+        # 2. Projeleri Bul
         projects = []
         for m in DB['MATCHES']:
-            m_name = m.get('data') or m.get('academician_name')
-            if normalize_name(m_name) == norm_name:
+            # Normalizasyon ile karşılaştır
+            if normalize_name(m.get('data')) == norm_name:
                 pid = str(m.get('Column3') or m.get('project_id') or "")
                 pd = DB['PROJECTS'].get(pid, {})
-                
+
+                # Karar durumu (Accepted/Rejected/Waiting)
                 decision = "waiting"
-                # FEEDBACK listesinde ara
                 for fb in DB['FEEDBACK']:
                     if normalize_name(fb.get("academician")) == norm_name and str(fb.get("projId")) == pid:
                         decision = fb.get("decision")
                         break
-                
+
+                # İşbirlikçiler (Aynı projeyi kabul eden başkaları)
+                collaborators = []
+                for fb in DB['FEEDBACK']:
+                    if str(fb.get("projId")) == pid and fb.get("decision") == "accepted":
+                        if normalize_name(fb.get("academician")) != norm_name:
+                            collaborators.append(fb.get("academician"))
+
                 projects.append({
                     "id": pid,
                     "title": pd.get("title") or pd.get("acronym") or f"Proje-{pid}",
@@ -295,58 +375,67 @@ def api_profile(request):
                     "status": pd.get("status", "-"),
                     "objective": (pd.get("objective") or "")[:200] + "...",
                     "decision": decision,
+                    "collaborators": collaborators,
                     "url": pd.get("url", "#")
                 })
-        
+
         projects.sort(key=lambda x: x['score'], reverse=True)
-        
-        img_url = get_image_url_for_name(name)
-        
+
         return JsonResponse({
             "profile": {
                 "Fullname": acc.get("Fullname"),
                 "Email": acc.get("Email"),
                 "Title": acc.get("Title"),
                 "Field": acc.get("Field"),
-                "Image": img_url,
-                "Duties": acc.get("Duties", [])
+                "Image": get_image_url_for_name(name),
+                "Duties": acc.get("Duties", []),
+                "Phone": acc.get("Phone", "-")
             },
             "projects": projects
         })
-    except Exception as e: return JsonResponse({"error": str(e)}, 500)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, 500)
+
 
 @csrf_exempt
 def api_project_decision(request):
+    """Karar Kaydetme (Kabul/Red)"""
     if request.method == "OPTIONS": return JsonResponse({})
     try:
         d = json.loads(request.body)
-        DB['FEEDBACK'].append(d)
-        with open(os.path.join(BASE_DIR, 'decisions.json'), 'w') as f:
+        # Varsa güncelle, yoksa ekle
+        found = False
+        for item in DB['FEEDBACK']:
+            if item.get("academician") == d.get("academician") and str(item.get("projId")) == str(d.get("projId")):
+                item.update(d)
+                found = True
+                break
+        if not found: DB['FEEDBACK'].append(d)
+
+        # Dosyaya yaz
+        save_path = find_file('decisions.json') or os.path.join(BASE_DIR, 'decisions.json')
+        with open(save_path, 'w') as f:
             json.dump(DB['FEEDBACK'], f)
+
         return JsonResponse({"status": "success"})
-    except: return JsonResponse({}, 400)
+    except:
+        return JsonResponse({}, 400)
+
 
 @csrf_exempt
 def api_top_projects(request):
+    """En Çok Önerilen 50 Proje"""
     if request.method == "OPTIONS": return JsonResponse({})
-    
-    # Eşleşmeleri Say
     cnt = Counter()
     for m in DB['MATCHES']:
         pid = str(m.get('Column3') or m.get('project_id') or "").strip()
         if pid: cnt[pid] += 1
-    
+
     top = []
     for pid, c in cnt.most_common(50):
-        # Proje detayını bul
         pd = DB['PROJECTS'].get(pid, {})
-        
-        # Başlık Bulma (Sırasıyla dene: title -> acronym -> ID)
-        title = pd.get("title")
-        if not title: title = pd.get("acronym")
-        if not title: title = pd.get("project_acronym")
-        if not title: title = f"Proje-{pid}" # Hiçbiri yoksa ID yaz
-        
+        title = pd.get("title") or pd.get("acronym") or pd.get("project_acronym") or f"Proje-{pid}"
+
         top.append({
             "id": pid,
             "count": c,
@@ -355,25 +444,34 @@ def api_top_projects(request):
             "status": pd.get("status", "-"),
             "url": pd.get("url", "#")
         })
-        
     return JsonResponse(top, safe=False)
+
 
 @csrf_exempt
 def api_announcements(request):
+    """Duyurular"""
     if request.method == "OPTIONS": return JsonResponse({})
     if request.method == "POST":
         d = json.loads(request.body)
         if d.get("action") == "delete":
-            try: del DB['ANNOUNCEMENTS'][d["index"]]
-            except: pass
+            try:
+                del DB['ANNOUNCEMENTS'][d["index"]]
+            except:
+                pass
         else:
             d["date"] = datetime.datetime.now().strftime("%d.%m.%Y")
             DB['ANNOUNCEMENTS'].insert(0, d)
+
+        path = find_file('announcements.json') or os.path.join(BASE_DIR, 'announcements.json')
+        with open(path, 'w') as f:
+            json.dump(DB['ANNOUNCEMENTS'], f)
         return JsonResponse({"status": "success"})
     return JsonResponse(DB['ANNOUNCEMENTS'], safe=False)
 
+
 @csrf_exempt
 def api_messages(request):
+    """Mesajlar"""
     if request.method == "OPTIONS": return JsonResponse({})
     if request.method == "POST":
         try:
@@ -382,87 +480,91 @@ def api_messages(request):
             if d.get("action") == "send":
                 d['timestamp'] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
                 DB['MESSAGES'].append(d)
+                path = find_file('messages.json') or os.path.join(BASE_DIR, 'messages.json')
+                with open(path, 'w') as f: json.dump(DB['MESSAGES'], f)
                 return JsonResponse({"status": "success"})
-        except: pass
+        except:
+            pass
     return JsonResponse([], safe=False)
+
 
 @csrf_exempt
 def api_network_graph(request):
-    """Kişisel İşbirliği Ağı: Aynı projeyi kabul eden hocaları bağlar"""
+    """İşbirliği Ağı Verisi"""
     if request.method == "OPTIONS": return JsonResponse({})
-    
-    user = request.GET.get('user') # İstek atan hoca
+    user = request.GET.get('user')
     if not user: return JsonResponse({"nodes": [], "links": []})
 
     norm_user = normalize_name(user)
-    
-    # 1. Merkez Düğüm (Kullanıcı)
-    nodes = [{"id": user, "group": 1, "isCenter": True, "img": ""}]
+    nodes = [{"id": user, "group": 1, "isCenter": True, "img": get_image_url_for_name(user)}]
     links = []
-    added_nodes = {norm_user} # Eklenenleri takip et
-    
-    # 2. Kullanıcının KABUL ETTİĞİ projeleri bul
-    my_accepted_projects = set()
+    added_nodes = {norm_user}
+
+    # Kullanıcının kabul ettiği projeler
+    my_projects = set()
     for fb in DB['FEEDBACK']:
         if normalize_name(fb.get("academician")) == norm_user and fb.get("decision") == "accepted":
-            my_accepted_projects.add(str(fb.get("projId")))
-            
-    # 3. Bu projeleri BAŞKA kimler kabul etmiş?
+            my_projects.add(str(fb.get("projId")))
+
+    # Ortakları bul
     collaborators = set()
     for fb in DB['FEEDBACK']:
         p_id = str(fb.get("projId"))
-        p_acc_norm = normalize_name(fb.get("academician"))
-        
-        # Eğer proje benim kabul ettiklerimden biriyse VE kişi ben değilsem VE o da kabul ettiyse
-        if p_id in my_accepted_projects and p_acc_norm != norm_user and fb.get("decision") == "accepted":
-            collaborators.add(fb.get("academician")) # Orijinal ismi ekle
-            
-    # 4. Ortakları Grafiğe Ekle
-    base_url = "https://eu-portal-backend.onrender.com"
-    
-    for col_name in collaborators:
-        norm_col = normalize_name(col_name)
-        if norm_col in added_nodes: continue
-        
-        # Resim Bul
-        img_url = get_image_url_for_name(col_name) # <-- Tek satırda halleder
-        
-        nodes.append({"id": col_name, "group": 2, "img": img_url})
-        links.append({"source": user, "target": col_name})
-        added_nodes.add(norm_col)
-        
+        p_acc = fb.get("academician")
+        # Eğer ortak proje varsa ve kişi ben değilsem
+        if p_id in my_projects and normalize_name(p_acc) != norm_user and fb.get("decision") == "accepted":
+            collaborators.add(p_acc)
+
+    for col in collaborators:
+        if normalize_name(col) in added_nodes: continue
+        nodes.append({"id": col, "group": 2, "img": get_image_url_for_name(col)})
+        links.append({"source": user, "target": col})
+        added_nodes.add(normalize_name(col))
+
     return JsonResponse({"nodes": nodes, "links": links})
 
+
+# ==========================================
+# 7. DOSYA SUNUCUSU (FILE SERVER) - ROBUST
+# ==========================================
 def serve_file(request, folder, filename):
     """
-    Hem klasörü hem de dosyayı büyük/küçük harf duyarlılığı olmadan bulur.
+    Linux/Windows fark etmeksizin dosyayı bulur ve sunar.
+    Büyük/Küçük harf duyarlılığını ortadan kaldırır.
     """
-    # 1. Klasör İsmini Doğru Bul (Linux Uyumluluğu)
-    target_folder_name = folder.lower()
-    found_folder_path = None
-    
-    # Ana dizindeki klasörleri tara
+    # 1. Klasörü Bul
+    target_folder = folder.lower()
+    folder_path = None
+
+    # Önce doğrudan dene
     if os.path.exists(os.path.join(BASE_DIR, folder)):
-        found_folder_path = os.path.join(BASE_DIR, folder)
+        folder_path = os.path.join(BASE_DIR, folder)
     else:
-        # Klasör bulunamadıysa, dizindeki tüm klasörlere bak (büyük/küçük harf eşleştir)
+        # Bulamazsan tara
         for f in os.listdir(BASE_DIR):
             if os.path.isdir(os.path.join(BASE_DIR, f)):
-                if f.lower() == target_folder_name:
-                    found_folder_path = os.path.join(BASE_DIR, f)
+                if f.lower() == target_folder:
+                    folder_path = os.path.join(BASE_DIR, f)
                     break
-    
-    if not found_folder_path:
-        return HttpResponse(f"Sunucuda '{folder}' adinda bir klasor bulunamadi. Lutfen GitHub'a yuklendiginden emin olun.", status=404)
 
-    # 2. Dosya İsmini Doğru Bul
-    target_filename = filename.lower()
-    for f in os.listdir(found_folder_path):
-        if f.lower() == target_filename:
-            return FileResponse(open(os.path.join(found_folder_path, f), 'rb'))
+    if not folder_path:
+        return HttpResponse(f"Klasor Yok: {folder}", status=404)
 
-    return HttpResponse(f"Dosya yok: {filename} (Klasor: {os.path.basename(found_folder_path)})", status=404)
+    # 2. Dosyayı Bul
+    target_file = filename.lower()
+    for f in os.listdir(folder_path):
+        if f.lower() == target_file:
+            full_path = os.path.join(folder_path, f)
+            # İçeriği sun
+            content_type, _ = mimetypes.guess_type(full_path)
+            return FileResponse(open(full_path, 'rb'), content_type=content_type or 'image/jpeg')
 
+    return HttpResponse(f"Dosya Yok: {filename}", status=404)
+
+
+# ==========================================
+# 8. URL YÖNLENDİRMELERİ
+# ==========================================
 urlpatterns = [
     path('', index),
     path('api/test/', api_test_data),
@@ -474,9 +576,10 @@ urlpatterns = [
     path('api/announcements/', api_announcements),
     path('api/messages/', api_messages),
     path('api/network-graph/', api_network_graph),
+    # Resim yolları
     path('images/<str:filename>', lambda r, filename: serve_file(r, 'images', filename)),
-    path('akademisyen_fotograflari/<str:filename>', lambda r, filename: serve_file(r, 'akademisyen_fotograflari', filename)),
-    path('api/debug-images/', api_debug_images), # <-- BUNU EKLE
+    path('akademisyen_fotograflari/<str:filename>',
+         lambda r, filename: serve_file(r, 'akademisyen_fotograflari', filename)),
 ]
 
 application = get_wsgi_application()
