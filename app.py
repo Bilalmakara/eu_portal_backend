@@ -267,7 +267,7 @@ def api_profile(request):
         projects.sort(key=lambda x: x['score'], reverse=True)
         
         img_url = None
-        base_url = "https://estu-portal-backend.onrender.com"
+        base_url = "https://eu-portal-backend.onrender.com"
         for w in DB['WEB_DATA']:
             if normalize_name(w.get("Fullname")) == norm_name and w.get("Image_Path"):
                 img_url = f"{base_url}/{w['Image_Path'].replace('\\', '/')}"
@@ -300,22 +300,33 @@ def api_project_decision(request):
 @csrf_exempt
 def api_top_projects(request):
     if request.method == "OPTIONS": return JsonResponse({})
+    
+    # Eşleşmeleri Say
     cnt = Counter()
     for m in DB['MATCHES']:
-        pid = m.get('Column3') or m.get('project_id')
-        if pid: cnt[str(pid)] += 1
+        pid = str(m.get('Column3') or m.get('project_id') or "").strip()
+        if pid: cnt[pid] += 1
     
     top = []
     for pid, c in cnt.most_common(50):
+        # Proje detayını bul
         pd = DB['PROJECTS'].get(pid, {})
+        
+        # Başlık Bulma (Sırasıyla dene: title -> acronym -> ID)
+        title = pd.get("title")
+        if not title: title = pd.get("acronym")
+        if not title: title = pd.get("project_acronym")
+        if not title: title = f"Proje-{pid}" # Hiçbiri yoksa ID yaz
+        
         top.append({
             "id": pid,
             "count": c,
-            "title": pd.get("title") or f"Proje-{pid}",
+            "title": title,
             "budget": pd.get("overall_budget", "-"),
             "status": pd.get("status", "-"),
             "url": pd.get("url", "#")
         })
+        
     return JsonResponse(top, safe=False)
 
 @csrf_exempt
@@ -348,9 +359,55 @@ def api_messages(request):
 
 @csrf_exempt
 def api_network_graph(request):
+    """Kişisel İşbirliği Ağı: Aynı projeyi kabul eden hocaları bağlar"""
     if request.method == "OPTIONS": return JsonResponse({})
-    # Basit graph (Hata vermemesi için)
-    return JsonResponse({"nodes": [], "links": []})
+    
+    user = request.GET.get('user') # İstek atan hoca
+    if not user: return JsonResponse({"nodes": [], "links": []})
+
+    norm_user = normalize_name(user)
+    
+    # 1. Merkez Düğüm (Kullanıcı)
+    nodes = [{"id": user, "group": 1, "isCenter": True, "img": ""}]
+    links = []
+    added_nodes = {norm_user} # Eklenenleri takip et
+    
+    # 2. Kullanıcının KABUL ETTİĞİ projeleri bul
+    my_accepted_projects = set()
+    for fb in DB['FEEDBACK']:
+        if normalize_name(fb.get("academician")) == norm_user and fb.get("decision") == "accepted":
+            my_accepted_projects.add(str(fb.get("projId")))
+            
+    # 3. Bu projeleri BAŞKA kimler kabul etmiş?
+    collaborators = set()
+    for fb in DB['FEEDBACK']:
+        p_id = str(fb.get("projId"))
+        p_acc_norm = normalize_name(fb.get("academician"))
+        
+        # Eğer proje benim kabul ettiklerimden biriyse VE kişi ben değilsem VE o da kabul ettiyse
+        if p_id in my_accepted_projects and p_acc_norm != norm_user and fb.get("decision") == "accepted":
+            collaborators.add(fb.get("academician")) # Orijinal ismi ekle
+            
+    # 4. Ortakları Grafiğe Ekle
+    base_url = "https://eu-portal-backend.onrender.com"
+    
+    for col_name in collaborators:
+        norm_col = normalize_name(col_name)
+        if norm_col in added_nodes: continue
+        
+        # Resim Bul
+        img_url = ""
+        for w in DB['WEB_DATA']:
+            if normalize_name(w.get("Fullname")) == norm_col and w.get("Image_Path"):
+                clean_path = w['Image_Path'].replace('\\', '/').split('/')[-1] # Sadece dosya adını al
+                img_url = f"{base_url}/akademisyen_fotograflari/{clean_path}"
+                break
+        
+        nodes.append({"id": col_name, "group": 2, "img": img_url})
+        links.append({"source": user, "target": col_name})
+        added_nodes.add(norm_col)
+        
+    return JsonResponse({"nodes": nodes, "links": links})
 
 def serve_file(request, folder, filename):
     folder_path = os.path.join(BASE_DIR, folder)
