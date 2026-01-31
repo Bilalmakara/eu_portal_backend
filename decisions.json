@@ -1,0 +1,20 @@
+[
+    {
+        "academician": "AHMET BAYLAR",
+        "projId": "101041867",
+        "projectTitle": "",
+        "decision": "accepted",
+        "note": "",
+        "timestamp": "2026-01-27 23:18",
+        "rating": 10
+    },
+    {
+        "academician": "ADNAN ÖZCAN",
+        "projId": "101041867",
+        "projectTitle": "XenoMicrogliaAD",
+        "decision": "accepted",
+        "note": "",
+        "rating": 7,
+        "timestamp": "2026-01-25 16:31"
+    }
+]
