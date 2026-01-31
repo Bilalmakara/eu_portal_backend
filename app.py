@@ -231,7 +231,7 @@ def api_profile(request):
         projects.sort(key=lambda x: x['score'], reverse=True)
         
         img_url = None
-        base_url = "https://estu-portal-backend.onrender.com"
+        base_url = "https://eu-portal-backend.onrender.com"
         for w in DB['WEB_DATA']:
             if normalize_name(w.get("Fullname")) == norm_name and w.get("Image_Path"):
                 img_url = f"{base_url}/{w['Image_Path'].replace('\\', '/')}"
