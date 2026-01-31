@@ -39,28 +39,58 @@ mimetypes.init()
 mimetypes.add_type("application/javascript", ".js", True)
 mimetypes.add_type("text/css", ".css", True)
 
-# --- DJANGO AYARLARI (RENDER İÇİN GÜNCELLENDİ) ---
+# app.py içindeki settings.configure bloğunu bul ve BUNUNLA DEĞİŞTİR:
+
 if not settings.configured:
     settings.configure(
-        DEBUG=False,  # Canlıda False yaptık
-        SECRET_KEY='gizli-anahtar-render-icin-rastgele-bir-sey', 
+        DEBUG=False, # Canlıda False
+        SECRET_KEY='gizli-anahtar-render-icin',
         ROOT_URLCONF=__name__,
-        ALLOWED_HOSTS=['*'],  # Her yerden erişime izin ver
+        ALLOWED_HOSTS=['*'], # Her yerden erişime izin ver (Host izni)
+        
         INSTALLED_APPS=[
             'django.contrib.staticfiles',
             'django.contrib.contenttypes',
             'django.contrib.auth',
-            'corsheaders',  # Frontend iletişimi için şart
+            'corsheaders',  # <--- BU MUTLAKA OLMALI
         ],
-        MIDDLEWARE=[
-            'corsheaders.middleware.CorsMiddleware', # En başta olmalı
-            'django.middleware.security.SecurityMiddleware',
-            'whitenoise.middleware.WhiteNoiseMiddleware', # Render için Statik Dosya Yöneticisi
-            'django.middleware.common.CommonMiddleware',
-        ],
-        CORS_ALLOW_ALL_ORIGINS=True, # Vercel'den gelen isteklere izin ver
         
-        # Statik Dosya Ayarları (Hata almamak için gerekli)
+        MIDDLEWARE=[
+            'corsheaders.middleware.CorsMiddleware', # <--- BU EN TEPEDE OLMALI (Çok Önemli!)
+            'django.middleware.security.SecurityMiddleware',
+            'whitenoise.middleware.WhiteNoiseMiddleware',
+            'django.middleware.common.CommonMiddleware',
+            # Diğer middleware'ler...
+        ],
+        
+        # --- CORS AYARLARI (KAPIYI AÇAN KISIM) ---
+        CORS_ALLOW_ALL_ORIGINS=True, # Herkese izin ver
+        CORS_ALLOW_CREDENTIALS=True, # Kimlik bilgilerine izin ver
+        
+        # Hangi metodlara izin verilecek?
+        CORS_ALLOW_METHODS=[
+            'DELETE',
+            'GET',
+            'OPTIONS',
+            'PATCH',
+            'POST',
+            'PUT',
+        ],
+        
+        # Hangi başlıklara (headers) izin verilecek?
+        CORS_ALLOW_HEADERS=[
+            'accept',
+            'accept-encoding',
+            'authorization',
+            'content-type',
+            'dnt',
+            'origin',
+            'user-agent',
+            'x-csrftoken',
+            'x-requested-with',
+        ],
+
+        # Statik Dosya Ayarları
         STATIC_URL='/static/',
         STATIC_ROOT=os.path.join(BASE_DIR, 'staticfiles'),
     )
