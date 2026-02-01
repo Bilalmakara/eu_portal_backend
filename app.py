@@ -207,6 +207,17 @@ def load_data():
                     elif key == 'web_data':
                         temp_db['WEB_DATA'] = get_all_rows(raw_json)
 
+                    # --- F. ŞİFRELER (PASSWORDS) ---
+                    elif key == 'passwords':
+                        # Gelen liste verisini {email: şifre} sözlüğüne çeviriyoruz
+                        for item in data_list:
+                            # Olası sütun isimlerine bak
+                            p_email = item.get('email') or item.get('Email') or item.get('username') or item.get('Column1')
+                            p_pass = item.get('password') or item.get('sifre') or item.get('Password') or item.get('Column2')
+                            
+                            if p_email and p_pass:
+                                temp_db['PASSWORDS'][str(p_email).strip().lower()] = str(p_pass).strip()
+
                     # --- E. DİĞERLERİ ---
                     else:
                         # Diğer dosyalar (decisions, announcements vb.) genelde düz listedir ama yine de garanti olsun
@@ -274,28 +285,37 @@ def api_test_data(request):
 
 @csrf_exempt
 def api_login(request):
-    """Giriş İşlemleri"""
+    """Giriş İşlemleri (Güncellendi)"""
     if request.method == "OPTIONS": return JsonResponse({})
     try:
         d = json.loads(request.body)
-        u = d.get('username', '').lower().strip()
-        p = d.get('password', '').strip()
-
-        # Admin
+        u = d.get('username', '').lower().strip() # Kullanıcı adı (Email)
+        p = d.get('password', '').strip()         # Şifre
+        
+        # 1. Admin Girişi
         if u == "admin" and p == "12345":
             return JsonResponse({"status": "success", "role": "admin", "name": "Yönetici"})
-
-        # Akademisyen
+            
+        # 2. Akademisyen Girişi
+        # Önce bu mail adresine sahip bir akademisyen var mı?
         if u in DB['ACADEMICIANS']:
-            # Şifre yoksa email prefixini kullan (örn: adeniz)
-            real_pass = DB['PASSWORDS'].get(u, u.split('@')[0])
-            if p == real_pass:
-                acc = DB['ACADEMICIANS'][u]
+            acc = DB['ACADEMICIANS'][u]
+            
+            # Şifre Kontrolü:
+            # A. Önce passwords.json dosyasında özel şifresi var mı diye bak
+            real_pass = DB['PASSWORDS'].get(u)
+            
+            # B. Yoksa varsayılan olarak mailin başını (örn: adeniz) şifre kabul et
+            if not real_pass:
+                real_pass = u.split('@')[0]
+            
+            # Şifre Eşleşiyor mu?
+            if str(p) == str(real_pass):
                 return JsonResponse({"status": "success", "role": "academician", "name": acc["Fullname"]})
-
-        return JsonResponse({"status": "error", "message": "Hatali giris"}, status=401)
-    except:
-        return JsonResponse({}, 400)
+        
+        return JsonResponse({"status": "error", "message": "Hatali giris bilgileri"}, status=401)
+    except Exception as e: 
+        return JsonResponse({"error": str(e)}, 400)
 
 
 @csrf_exempt
@@ -344,14 +364,14 @@ def api_admin_data(request):
 
 @csrf_exempt
 def api_profile(request):
-    """Akademisyen Profil ve Projeleri"""
+    """Akademisyen Profil, Resim ve Telefon"""
     if request.method == "OPTIONS": return JsonResponse({})
     try:
         body = json.loads(request.body)
         name = body.get('name')
         norm_name = normalize_name(name)
-
-        # 1. Akademisyen Bilgisi
+        
+        # 1. Akademisyen Bilgisi (academicians.json'dan)
         acc = None
         for email, p in DB['ACADEMICIANS'].items():
             if normalize_name(p.get("Fullname")) == norm_name:
@@ -359,26 +379,45 @@ def api_profile(request):
                 break
         if not acc: return JsonResponse({"error": "Bulunamadi"}, 404)
 
-        # 2. Projeleri Bul
+        # 2. Web Data'dan Ek Bilgiler (Resim ve Telefon)
+        img_url = None
+        phone_number = "-" # Varsayılan boş
+        
+        # Web Data içinde bu hocayı ara
+        for w in DB['WEB_DATA']:
+            if normalize_name(w.get("Fullname")) == norm_name:
+                # A. Resim Yolu
+                path_val = w.get("Image_Path")
+                if path_val:
+                    filename = path_val.replace('\\', '/').split('/')[-1]
+                    img_url = f"{BASE_URL}/akademisyen_fotograflari/{filename}"
+                
+                # B. Telefon Numarası (Olası sütun isimleri)
+                phone_number = w.get("Work_Phone") or w.get("Phone") or w.get("Telefon") or "-"
+                break
+        
+        # Eğer web_data'da resim yoksa isimden tahmin et
+        if not img_url:
+            slug_name = slugify_name(name)
+            img_url = f"{BASE_URL}/akademisyen_fotograflari/{slug_name}.jpg"
+
+        # 3. Projeleri Bul (Aynı kalıyor)
         projects = []
         for m in DB['MATCHES']:
-            # Normalizasyon ile karşılaştır
             if normalize_name(m.get('data')) == norm_name:
                 pid = str(m.get('Column3') or m.get('project_id') or "")
                 pd = DB['PROJECTS'].get(pid, {})
-
-                # Karar durumu (Accepted/Rejected/Waiting)
+                
                 decision = "waiting"
                 for fb in DB['FEEDBACK']:
                     if normalize_name(fb.get("academician")) == norm_name and str(fb.get("projId")) == pid:
                         decision = fb.get("decision")
                         break
-
-                # İşbirlikçiler (Aynı projeyi kabul eden başkaları)
+                
                 collaborators = []
                 for fb in DB['FEEDBACK']:
                     if str(fb.get("projId")) == pid and fb.get("decision") == "accepted":
-                        if normalize_name(fb.get("academician")) != norm_name:
+                         if normalize_name(fb.get("academician")) != norm_name:
                             collaborators.append(fb.get("academician"))
 
                 projects.append({
@@ -392,23 +431,22 @@ def api_profile(request):
                     "collaborators": collaborators,
                     "url": pd.get("url", "#")
                 })
-
+        
         projects.sort(key=lambda x: x['score'], reverse=True)
-
+        
         return JsonResponse({
             "profile": {
                 "Fullname": acc.get("Fullname"),
                 "Email": acc.get("Email"),
                 "Title": acc.get("Title"),
                 "Field": acc.get("Field"),
-                "Image": get_image_url_for_name(name),
+                "Image": img_url,
                 "Duties": acc.get("Duties", []),
-                "Phone": acc.get("Phone", "-")
+                "Phone": phone_number  # <-- Telefon eklendi
             },
             "projects": projects
         })
-    except Exception as e:
-        return JsonResponse({"error": str(e)}, 500)
+    except Exception as e: return JsonResponse({"error": str(e)}, 500)
 
 
 @csrf_exempt
