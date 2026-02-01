@@ -38,11 +38,22 @@ TARGET_FILES = {
 # ==========================================
 # 2. GÜVENLİK VE CORS AYARLARI
 # ==========================================
+# --- 2. CORS MIDDLEWARE (GÜÇLENDİRİLMİŞ) ---
 class CorsMiddleware(MiddlewareMixin):
+    def process_request(self, request):
+        # Preflight (OPTIONS) istekleri gelirse hemen 200 OK dön ve izin ver
+        if request.method == "OPTIONS":
+            response = HttpResponse()
+            response["Access-Control-Allow-Origin"] = "*"
+            response["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+            response["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
+            return response
+        return None
+
     def process_response(self, request, response):
         response["Access-Control-Allow-Origin"] = "*"
-        response["Access-Control-Allow-Methods"] = "*"
-        response["Access-Control-Allow-Headers"] = "*"
+        response["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With"
         return response
 
 
@@ -237,25 +248,22 @@ load_data()
 # ==========================================
 def get_image_url_for_name(name):
     """
-    İki aşamalı resim bulma:
-    1. web_data.json'daki yola bak.
-    2. Bulamazsa isimden tahmin et (ugurozdemir.jpg).
-    
-    DÜZELTME: Artık BASE_URL (https://...) eklemiyoruz. Sadece yolu dönüyoruz.
+    Resim yolunu döndürür. 
+    ÖNEMLİ: Frontend zaten base URL eklediği için burada sadece RELATIVE path dönüyoruz.
     """
     norm_name = normalize_name(name)
     slug_name = slugify_name(name) 
     
-    # 1. Yöntem: Web Data
+    # 1. Yöntem: Web Data'dan
     for w in DB['WEB_DATA']:
         if normalize_name(w.get("Fullname")) == norm_name:
             path_val = w.get("Image_Path")
             if path_val:
-                # Sadece dosya adını al ve temiz yola çevir
                 filename = path_val.replace('\\', '/').split('/')[-1]
+                # Başına / koyarak dönüyoruz
                 return f"/akademisyen_fotograflari/{filename}"
     
-    # 2. Yöntem: Tahmin (Fallback)
+    # 2. Yöntem: Tahmin
     return f"/akademisyen_fotograflari/{slug_name}.jpg"
 
 
@@ -320,39 +328,42 @@ def api_login(request):
         return JsonResponse({"error": str(e)}, 400)
 
 @csrf_exempt
-def api_reset_password(request):
-    """Şifre Sıfırlama ve Kaydetme (Düzeltilmiş)"""
+def api_change_password(request):
+    """Şifre Değiştirme (Frontend: /api/change-password/)"""
     if request.method == "OPTIONS": return JsonResponse({})
     try:
         d = json.loads(request.body)
-        u = d.get('username', '').lower().strip()
-        new_p = d.get('password', '').strip()
+        # Frontend 'username' göndermiyorsa, token yapısı olmadığı için 
+        # email'i body içinde göndermesi gerekir. 
+        # Eğer göndermiyorsa bu basit sistemde pass.json'u güncelleyemeyiz.
+        # Varsayım: Frontend email ve newPassword gönderiyor.
         
-        # Kullanıcı var mı?
-        if u in DB['ACADEMICIANS']:
+        u = d.get('username') or d.get('email', '').lower().strip()
+        new_p = d.get('password') or d.get('newPassword', '').strip()
+        
+        if u and u in DB['ACADEMICIANS']:
             # 1. Hafızayı Güncelle
             DB['PASSWORDS'][u] = new_p
             
             # 2. Dosyayı Güncelle
             save_list = [{"email": email, "password": password} for email, password in DB['PASSWORDS'].items()]
             
-            # Dosya yolunu bul veya yoksa oluştur
             save_path = find_file('passwords.json')
-            if not save_path:
-                save_path = os.path.join(BASE_DIR, 'passwords.json')
+            if not save_path: save_path = os.path.join(BASE_DIR, 'passwords.json')
             
-            try:
-                with open(save_path, 'w', encoding='utf-8') as f:
-                    json.dump(save_list, f, indent=4)
-            except Exception as file_error:
-                print(f"Dosya Yazma Hatasi: {file_error}")
-                # Dosya yazılamasa bile hafızada değiştiği için 'success' dönüyoruz ki kullanıcı takılmasın
+            with open(save_path, 'w', encoding='utf-8') as f:
+                json.dump(save_list, f, indent=4)
                 
-            return JsonResponse({"status": "success", "message": "Sifre basariyla guncellendi"})
+            return JsonResponse({"status": "success", "message": "Sifre degistirildi"})
             
         return JsonResponse({"status": "error", "message": "Kullanici bulunamadi"}, 404)
     except Exception as e: 
         return JsonResponse({"error": str(e)}, 500)
+
+@csrf_exempt
+def api_logout(request):
+    """Çıkış İşlemi (Frontend hatasını önlemek için)"""
+    return JsonResponse({"status": "success", "message": "Cikis yapildi"})
         
 @csrf_exempt
 def api_admin_data(request):
@@ -662,7 +673,8 @@ urlpatterns = [
     path('', index),
     path('api/test/', api_test_data),
     path('api/login/', api_login),
-    path('api/reset-password/', api_reset_password),
+    path('api/change-password/', api_change_password), # <-- Frontend isteğine uygun isim
+    path('api/logout/', api_logout),
     path('api/admin-data/', api_admin_data),
     path('api/profile/', api_profile),
     path('api/decision/', api_project_decision),
