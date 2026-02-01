@@ -575,22 +575,57 @@ def api_announcements(request):
 
 @csrf_exempt
 def api_messages(request):
-    """Mesajlar"""
+    """Mesajlar: Sadece ilgili kullanıcıya ait mesajları getirir"""
     if request.method == "OPTIONS": return JsonResponse({})
+    
     if request.method == "POST":
         try:
             d = json.loads(request.body)
-            if d.get("action") == "list": return JsonResponse(DB['MESSAGES'], safe=False)
-            if d.get("action") == "send":
-                d['timestamp'] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-                DB['MESSAGES'].append(d)
-                path = find_file('messages.json') or os.path.join(BASE_DIR, 'messages.json')
-                with open(path, 'w') as f: json.dump(DB['MESSAGES'], f)
-                return JsonResponse({"status": "success"})
-        except:
-            pass
-    return JsonResponse([], safe=False)
+            action = d.get("action")
 
+            # --- 1. MESAJLARI LİSTELEME (FİLTRELİ) ---
+            if action == "list":
+                # Frontend'den o anki kullanıcının adını almamız lazım
+                current_user = d.get("user") or d.get("username")
+                
+                if not current_user:
+                    return JsonResponse([], safe=False) # Kullanıcı yoksa boş dön
+
+                norm_current = normalize_name(current_user)
+                filtered_messages = []
+
+                for msg in DB['MESSAGES']:
+                    # Mesajın göndereni VEYA alıcısı bu kullanıcı mı?
+                    sender = normalize_name(msg.get("sender") or msg.get("from"))
+                    receiver = normalize_name(msg.get("receiver") or msg.get("to"))
+                    
+                    if sender == norm_current or receiver == norm_current:
+                        filtered_messages.append(msg)
+                
+                return JsonResponse(filtered_messages, safe=False)
+
+            # --- 2. MESAJ GÖNDERME ---
+            if action == "send":
+                # Zaman damgası ekle
+                d['timestamp'] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                # Mesajı veritabanına ekle
+                DB['MESSAGES'].append(d)
+                
+                # Dosyaya kaydet
+                path = find_file('messages.json')
+                if not path: path = os.path.join(BASE_DIR, 'messages.json')
+                
+                with open(path, 'w', encoding='utf-8') as f:
+                    json.dump(DB['MESSAGES'], f, indent=4)
+                    
+                return JsonResponse({"status": "success"})
+
+        except Exception as e:
+            print(f"Mesaj Hatasi: {e}")
+            return JsonResponse({"error": str(e)}, 400)
+            
+    return JsonResponse([], safe=False)
+    
 
 @csrf_exempt
 def api_network_graph(request):
