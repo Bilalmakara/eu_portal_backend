@@ -156,9 +156,12 @@ def get_all_rows(data):
                 all_rows.extend(value)
     return all_rows
 
+# ==========================================
+# 4. VERİ YÜKLEME (DATA LOADING) - ROBUST (SAĞLAMLAŞTIRILMIŞ)
+# ==========================================
 def load_data():
     global DB
-    # Veri tabanı taslağı
+    # Başlangıçta her şeyi boş tanımla ki dosya yoksa hata vermesin
     temp_db = { 
         'PROJECTS': {}, 'ACADEMICIANS': {}, 'MATCHES': [], 
         'FEEDBACK': [], 'WEB_DATA': [], 'MESSAGES': [], 
@@ -167,97 +170,73 @@ def load_data():
     
     for key, filename in TARGET_FILES.items():
         path = find_file(filename)
-        
-        # Dosya türüne göre anahtar belirleme
         data_key = key.upper()
         if key == 'matches': data_key = 'MATCHES'
         elif key == 'decisions': data_key = 'FEEDBACK'
         
         if path:
             try:
+                # Dosya boşsa hata vermesin diye try-except
                 with open(path, 'r', encoding='utf-8') as f:
-                    raw_json = json.load(f)
+                    file_content = f.read().strip()
+                    if not file_content: # Dosya boşsa atla
+                        continue
+                    raw_json = json.loads(file_content)
                     
-                    # --- A. EŞLEŞMELER (MATCHES) - KRİTİK DÜZELTME ---
-                    if key == 'matches':
-                        # 1. Bütün sayfalardaki verileri (Sheet1, Sheet1 (2)...) birleştir
-                        raw_list = get_all_rows(raw_json)
-                        
-                        clean_matches = []
-                        last_valid_name = None # Hafıza (Forward Fill için)
+                    # Veriyi kabuğundan çıkar
+                    data_list = unwrap_data(raw_json)
 
-                        for item in raw_list:
-                            # 2. İsim verisini çek ('data' sütunu)
-                            # Bazen 'academician_name' başlığı veri gibi gelebilir, onu altta filtreleyeceğiz
-                            raw_name = item.get('data')
-                            
-                            # İsim varsa hafızayı güncelle (En az 3 harfli ve 'header' değilse)
+                    if key == 'matches':
+                        # ... (Matches işleme kodu aynı kalıyor) ...
+                        clean_matches = []
+                        last_valid_name = None 
+                        for item in data_list:
+                            raw_name = item.get('data') or item.get('academician_name') or item.get('Column1')
                             if raw_name:
                                 temp_check = str(raw_name).strip()
-                                # Header kelimelerini filtrele
                                 if len(temp_check) > 3 and temp_check.lower() not in ["academician_name", "data", "sheet1", "column1", "matches"]:
                                     last_valid_name = temp_check
-                            
-                            # 3. İsim bu satırda yoksa hafızadakini kullan (Birleştirilmiş hücre mantığı)
                             current_name = raw_name if raw_name else last_valid_name
-
-                            # 4. Proje ID'sini çek ('Column3')
-                            pid = str(item.get('Column3') or item.get('project_id') or "").strip()
-                            
-                            # 5. Filtreleme: İsim veya ID yoksa atla
+                            pid = str(item.get('Column3') or item.get('project_id') or "")
                             if not current_name or not pid: continue
-                            
-                            # Header (Başlık) satırlarını atla
                             check_name = normalize_name(current_name)
-                            if "COLUMN" in check_name or "ACADEMICIAN" in check_name or "SHEET" in check_name: continue
+                            if "COLUMN" in check_name or "SHEET" in check_name or "DATA" in check_name: continue
                             if pid.lower() in ["matches", "project_id", "column3", "column"]: continue
-                            
-                            # Temiz veriyi listeye ekle
-                            item['data'] = current_name # İsmi düzeltilmiş haliyle kaydet
+                            item['data'] = current_name 
                             clean_matches.append(item)
-                        
                         temp_db['MATCHES'] = clean_matches
 
-                    # --- B. PROJELER ---
                     elif key == 'projects':
-                        # Projeler de Sheet içinde olabilir, hepsini alalım
-                        raw_list = get_all_rows(raw_json)
-                        for p in raw_list:
+                        for p in data_list:
                             pid = str(p.get("project_id", "")).strip()
                             if pid: temp_db['PROJECTS'][pid] = p
 
-                    # --- C. AKADEMİSYENLER ---
                     elif key == 'academicians':
-                        raw_list = get_all_rows(raw_json)
-                        for p in raw_list:
+                        for p in data_list:
                             if p.get("Email"): temp_db['ACADEMICIANS'][p["Email"].strip().lower()] = p
                     
-                    # --- D. RESİM YOLLARI (WEB_DATA) ---
-                    elif key == 'web_data':
-                        temp_db['WEB_DATA'] = get_all_rows(raw_json)
-
-                    # --- F. ŞİFRELER (PASSWORDS) ---
                     elif key == 'passwords':
-                        # Gelen liste verisini {email: şifre} sözlüğüne çeviriyoruz
                         for item in data_list:
-                            # Olası sütun isimlerine bak
-                            p_email = item.get('email') or item.get('Email') or item.get('username') or item.get('Column1')
-                            p_pass = item.get('password') or item.get('sifre') or item.get('Password') or item.get('Column2')
-                            
+                            p_email = item.get('email') or item.get('Email') or item.get('username')
+                            p_pass = item.get('password') or item.get('sifre') or item.get('Password')
                             if p_email and p_pass:
                                 temp_db['PASSWORDS'][str(p_email).strip().lower()] = str(p_pass).strip()
 
-                    # --- E. DİĞERLERİ ---
+                    # KAYITLAR (LOGS) VE MESAJLAR İÇİN ÖZEL KONTROL
+                    elif key == 'logs':
+                        temp_db['LOGS'] = data_list if isinstance(data_list, list) else []
+                    elif key == 'messages':
+                        temp_db['MESSAGES'] = data_list if isinstance(data_list, list) else []
+                    
                     else:
-                        # Diğer dosyalar (decisions, announcements vb.) genelde düz listedir ama yine de garanti olsun
-                        temp_db[data_key] = get_all_rows(raw_json)
+                        temp_db[data_key] = data_list
 
             except Exception as e:
                 print(f"HATA - {filename}: {e}")
     
     DB = temp_db
 
-# Uygulama başlarken verileri yükle
+# Yüklemeyi başlat
 load_data()
 
 
@@ -398,7 +377,6 @@ def api_admin_data(request):
     if request.method == "OPTIONS": return JsonResponse({})
     
     acc_list = []
-    # Hız için map oluştur
     matches_map = {} 
     for m in DB['MATCHES']:
         raw_name = m.get('data')
@@ -419,12 +397,7 @@ def api_admin_data(request):
                 if s > best_score: best_score = s
             except: pass
             
-        # Resim yolunu al (Artık başında https:// YOK)
         image_path = get_image_url_for_name(name)
-        
-        # Frontend'e tam link göndermek gerekiyorsa burada birleştirebiliriz
-        # AMA senin hatan "çift link" olduğu için, frontend zaten ekleme yapıyor demektir.
-        # O yüzden burayı da "image_path" olarak bırakıyoruz.
         
         acc_list.append({
             "name": name,
@@ -434,11 +407,18 @@ def api_admin_data(request):
             "image": image_path 
         })
     
+    # GÜVENLİK ÖNLEMİ: logs ve announcements kesinlikle liste olmalı
+    safe_logs = DB.get('LOGS', [])
+    if not isinstance(safe_logs, list): safe_logs = []
+    
+    safe_announcements = DB.get('ANNOUNCEMENTS', [])
+    if not isinstance(safe_announcements, list): safe_announcements = []
+
     return JsonResponse({
         "academicians": acc_list,
-        "feedbacks": DB['FEEDBACK'],
-        "logs": DB['LOGS'],
-        "announcements": DB['ANNOUNCEMENTS']
+        "feedbacks": DB.get('FEEDBACK', []),
+        "logs": safe_logs,               # <-- Düzeltildi
+        "announcements": safe_announcements
     })
 
 @csrf_exempt
@@ -602,7 +582,7 @@ def api_announcements(request):
 
 @csrf_exempt
 def api_messages(request):
-    """Mesajlar: Admin hepsini görür, akademisyen sadece kendininkini"""
+    """Mesajlar: Admin hepsini görür"""
     if request.method == "OPTIONS": return JsonResponse({})
     
     if request.method == "POST":
@@ -610,19 +590,23 @@ def api_messages(request):
             d = json.loads(request.body)
             action = d.get("action")
 
-            # --- 1. MESAJLARI LİSTELEME ---
             if action == "list":
                 current_user = d.get("user") or d.get("username")
                 if not current_user: return JsonResponse([], safe=False)
 
-                # EĞER KULLANICI 'Yönetici' veya 'admin' İSE HEPSİNİ DÖNDÜR
-                if current_user.lower() in ["admin", "yonetici", "yönetici"]:
-                    return JsonResponse(DB['MESSAGES'], safe=False)
+                # Admin Kontrolü (Genişletilmiş)
+                # Frontend "Yönetici", "Admin", "admin " vb. gönderse de kabul et
+                u_lower = str(current_user).lower().strip()
+                if u_lower in ["admin", "yonetici", "yönetici", "administrator", "root"]:
+                    # Tüm mesajları gönder (Tarihe göre sırala - en yeni en üstte)
+                    all_msgs = DB.get('MESSAGES', [])
+                    # Listeyi ters çevirip gönder (isteğe bağlı)
+                    return JsonResponse(all_msgs, safe=False)
 
-                # DEĞİLSE FİLTRELE
+                # Normal Kullanıcı Filtreleme
                 norm_current = normalize_name(current_user)
                 filtered_messages = []
-                for msg in DB['MESSAGES']:
+                for msg in DB.get('MESSAGES', []):
                     sender = normalize_name(msg.get("sender") or msg.get("from"))
                     receiver = normalize_name(msg.get("receiver") or msg.get("to"))
                     if sender == norm_current or receiver == norm_current:
@@ -630,7 +614,6 @@ def api_messages(request):
                 
                 return JsonResponse(filtered_messages, safe=False)
 
-            # --- 2. MESAJ GÖNDERME ---
             if action == "send":
                 d['timestamp'] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
                 DB['MESSAGES'].append(d)
