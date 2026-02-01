@@ -317,15 +317,42 @@ def api_login(request):
     except Exception as e: 
         return JsonResponse({"error": str(e)}, 400)
 
-
+@csrf_exempt
+def api_reset_password(request):
+    """Şifre Sıfırlama ve Kaydetme"""
+    if request.method == "OPTIONS": return JsonResponse({})
+    try:
+        d = json.loads(request.body)
+        u = d.get('username', '').lower().strip()
+        new_p = d.get('password', '').strip()
+        
+        # Kullanıcı var mı?
+        if u in DB['ACADEMICIANS']:
+            # 1. Hafızayı Güncelle
+            DB['PASSWORDS'][u] = new_p
+            
+            # 2. Dosyayı Güncelle (List of Dict formatında kaydet ki load_data bozulmasın)
+            # Mevcut hafızadaki {email: şifre} yapısını tekrar dosya formatına [{email:.., password:..}] çeviriyoruz
+            save_list = [{"email": email, "password": password} for email, password in DB['PASSWORDS'].items()]
+            
+            save_path = find_file('passwords.json') or os.path.join(BASE_DIR, 'passwords.json')
+            with open(save_path, 'w', encoding='utf-8') as f:
+                json.dump(save_list, f, indent=4)
+                
+            return JsonResponse({"status": "success", "message": "Sifre basariyla guncellendi"})
+            
+        return JsonResponse({"status": "error", "message": "Kullanici bulunamadi"}, 404)
+    except Exception as e: 
+        return JsonResponse({"error": str(e)}, 500)
+        
 @csrf_exempt
 def api_admin_data(request):
-    """Yönetici Paneli Verileri"""
+    """Yönetici Paneli Verileri (Resim Düzeltildi)"""
     if request.method == "OPTIONS": return JsonResponse({})
-
+    
     acc_list = []
     # Hız için map oluştur
-    matches_map = {}
+    matches_map = {} 
     for m in DB['MATCHES']:
         raw_name = m.get('data')
         if raw_name:
@@ -336,31 +363,32 @@ def api_admin_data(request):
     for email, acc in DB['ACADEMICIANS'].items():
         name = acc.get("Fullname", "")
         norm_name = normalize_name(name)
-
+        
         my_matches = matches_map.get(norm_name, [])
         best_score = 0
         for m in my_matches:
             try:
                 s = int(m.get('Column7') or m.get('score') or 0)
                 if s > best_score: best_score = s
-            except:
-                pass
+            except: pass
+            
+        # BURASI ÖNEMLİ: Resim bulma fonksiyonunu burada da kullanıyoruz
+        image_url = get_image_url_for_name(name)
 
         acc_list.append({
             "name": name,
             "email": email,
             "project_count": len(my_matches),
             "best_score": best_score,
-            "image": get_image_url_for_name(name)
+            "image": image_url  # <-- Düzeltilmiş resim yolu
         })
-
+    
     return JsonResponse({
         "academicians": acc_list,
         "feedbacks": DB['FEEDBACK'],
         "logs": DB['LOGS'],
         "announcements": DB['ANNOUNCEMENTS']
     })
-
 
 @csrf_exempt
 def api_profile(request):
@@ -621,6 +649,7 @@ urlpatterns = [
     path('', index),
     path('api/test/', api_test_data),
     path('api/login/', api_login),
+    path('api/reset-password/', api_reset_password),
     path('api/admin-data/', api_admin_data),
     path('api/profile/', api_profile),
     path('api/decision/', api_project_decision),
