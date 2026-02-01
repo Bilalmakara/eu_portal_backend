@@ -138,30 +138,27 @@ def find_file(filename):
 
 
 # ==========================================
-# 4. VERİ YÜKLEME (DATA LOADING) - MULTI-SHEET DESTEKLİ
+# 4. VERİ YÜKLEME (DATA LOADING) - FİNAL SÜRÜM
 # ==========================================
 
 def get_all_rows(data):
     """
-    JSON içindeki 'Sheet1', 'Sheet1 (2)' gibi tüm listeleri bulur ve
-    tek bir dev listede birleştirir. Böylece tüm sayfalar okunur.
+    JSON verisi içindeki TÜM listeleri (Sheet1, Sheet2, Data vb.) bulur ve birleştirir.
+    Böylece 'Sheet1 (2)' gibi ek sayfalardaki veriler kaybolmaz.
     """
     all_rows = []
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
-        # Sözlükse, içindeki tüm listeleri (Sheet'leri) topla
+        # Sözlükse, içindeki liste olan her şeyi topla
         for key, value in data.items():
             if isinstance(value, list):
                 all_rows.extend(value)
     return all_rows
 
-# ==========================================
-# 4. VERİ YÜKLEME (DATA LOADING) - ROBUST (SAĞLAMLAŞTIRILMIŞ)
-# ==========================================
 def load_data():
     global DB
-    # Başlangıçta her şeyi boş tanımla ki dosya yoksa hata vermesin
+    # Başlangıçta her şeyi boş tanımla (Hata önleyici)
     temp_db = { 
         'PROJECTS': {}, 'ACADEMICIANS': {}, 'MATCHES': [], 
         'FEEDBACK': [], 'WEB_DATA': [], 'MESSAGES': [], 
@@ -171,50 +168,70 @@ def load_data():
     for key, filename in TARGET_FILES.items():
         path = find_file(filename)
         data_key = key.upper()
+        
+        # Özel anahtar isimleri
         if key == 'matches': data_key = 'MATCHES'
         elif key == 'decisions': data_key = 'FEEDBACK'
         
         if path:
             try:
-                # Dosya boşsa hata vermesin diye try-except
                 with open(path, 'r', encoding='utf-8') as f:
                     file_content = f.read().strip()
-                    if not file_content: # Dosya boşsa atla
-                        continue
+                    if not file_content: continue # Dosya boşsa geç
+                    
                     raw_json = json.loads(file_content)
                     
-                    # Veriyi kabuğundan çıkar
-                    data_list = unwrap_data(raw_json)
+                    # KRİTİK HAMLE: Tüm sayfaları birleştir
+                    data_list = get_all_rows(raw_json)
 
+                    # --- A. EŞLEŞMELER (MATCHES) ---
                     if key == 'matches':
-                        # ... (Matches işleme kodu aynı kalıyor) ...
                         clean_matches = []
                         last_valid_name = None 
+
                         for item in data_list:
+                            # İsim bul (data, academician_name veya Column1)
                             raw_name = item.get('data') or item.get('academician_name') or item.get('Column1')
+                            
+                            # İsim hafızasını güncelle
                             if raw_name:
                                 temp_check = str(raw_name).strip()
-                                if len(temp_check) > 3 and temp_check.lower() not in ["academician_name", "data", "sheet1", "column1", "matches"]:
+                                # Header (Başlık) değilse hafızaya al
+                                if len(temp_check) > 2 and temp_check.lower() not in ["academician_name", "data", "sheet1", "column1", "matches"]:
                                     last_valid_name = temp_check
+                            
+                            # İsim yoksa hafızadakini kullan (Forward Fill)
                             current_name = raw_name if raw_name else last_valid_name
-                            pid = str(item.get('Column3') or item.get('project_id') or "")
+
+                            # Proje ID bul
+                            pid = str(item.get('Column3') or item.get('project_id') or "").strip()
+                            
+                            # Filtrele
                             if not current_name or not pid: continue
+                            
+                            # Başlık satırlarını temizle
                             check_name = normalize_name(current_name)
                             if "COLUMN" in check_name or "SHEET" in check_name or "DATA" in check_name: continue
                             if pid.lower() in ["matches", "project_id", "column3", "column"]: continue
+                            
+                            # Temiz veriyi ekle
                             item['data'] = current_name 
                             clean_matches.append(item)
+                        
                         temp_db['MATCHES'] = clean_matches
 
+                    # --- B. PROJELER ---
                     elif key == 'projects':
                         for p in data_list:
                             pid = str(p.get("project_id", "")).strip()
                             if pid: temp_db['PROJECTS'][pid] = p
 
+                    # --- C. AKADEMİSYENLER ---
                     elif key == 'academicians':
                         for p in data_list:
                             if p.get("Email"): temp_db['ACADEMICIANS'][p["Email"].strip().lower()] = p
                     
+                    # --- D. ŞİFRELER ---
                     elif key == 'passwords':
                         for item in data_list:
                             p_email = item.get('email') or item.get('Email') or item.get('username')
@@ -222,23 +239,18 @@ def load_data():
                             if p_email and p_pass:
                                 temp_db['PASSWORDS'][str(p_email).strip().lower()] = str(p_pass).strip()
 
-                    # KAYITLAR (LOGS) VE MESAJLAR İÇİN ÖZEL KONTROL
-                    elif key == 'logs':
-                        temp_db['LOGS'] = data_list if isinstance(data_list, list) else []
-                    elif key == 'messages':
-                        temp_db['MESSAGES'] = data_list if isinstance(data_list, list) else []
-                    
+                    # --- E. DİĞERLERİ ---
                     else:
                         temp_db[data_key] = data_list
 
             except Exception as e:
                 print(f"HATA - {filename}: {e}")
+                # Hata olsa bile temp_db'deki boş listeler sayesinde site çökmez
     
     DB = temp_db
 
-# Yüklemeyi başlat
+# Uygulama başlarken yükle
 load_data()
-
 
 # ==========================================
 # 5. RESİM BULUCU (IMAGE FINDER) - DÜZELTİLMİŞ (V4)
