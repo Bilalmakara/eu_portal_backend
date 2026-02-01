@@ -107,6 +107,24 @@ def slugify_name(name):
     n = re.sub(r'[^a-z0-9]', '', n)
     return n
 
+def log_system_access(user, role, action):
+    """Sistem erişim kayıtlarını tutar ve dosyaya yazar"""
+    entry = {
+        "Saat": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "Kullanıcı": user,
+        "Rol": role,
+        "İşlem": action
+    }
+    # En yeni kayıt en üstte olsun
+    DB['LOGS'].insert(0, entry)
+    
+    # Dosyaya kaydet
+    path = find_file('access_logs.json')
+    if not path: path = os.path.join(BASE_DIR, 'access_logs.json')
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(DB['LOGS'], f, indent=4, ensure_ascii=False)
+    except: pass
 
 def find_file(filename):
     """Klasördeki dosyayı büyük/küçük harf gözetmeksizin bulur"""
@@ -297,35 +315,32 @@ def api_test_data(request):
 
 @csrf_exempt
 def api_login(request):
-    """Giriş İşlemleri (Güncellendi)"""
+    """Giriş İşlemleri (Loglama Özellikli)"""
     if request.method == "OPTIONS": return JsonResponse({})
     try:
         d = json.loads(request.body)
-        u = d.get('username', '').lower().strip() # Kullanıcı adı (Email)
-        p = d.get('password', '').strip()         # Şifre
+        u = d.get('username', '').lower().strip()
+        p = d.get('password', '').strip()
         
         # 1. Admin Girişi
         if u == "admin" and p == "12345":
+            log_system_access("Admin", "Yönetici", "Giriş Başarılı")
             return JsonResponse({"status": "success", "role": "admin", "name": "Yönetici"})
             
         # 2. Akademisyen Girişi
-        # Önce bu mail adresine sahip bir akademisyen var mı?
         if u in DB['ACADEMICIANS']:
             acc = DB['ACADEMICIANS'][u]
-            
-            # Şifre Kontrolü:
-            # A. Önce passwords.json dosyasında özel şifresi var mı diye bak
+            # Şifre Kontrolü (Önce özel şifre, yoksa varsayılan)
             real_pass = DB['PASSWORDS'].get(u)
+            if not real_pass: real_pass = u.split('@')[0]
             
-            # B. Yoksa varsayılan olarak mailin başını (örn: adeniz) şifre kabul et
-            if not real_pass:
-                real_pass = u.split('@')[0]
-            
-            # Şifre Eşleşiyor mu?
             if str(p) == str(real_pass):
-                return JsonResponse({"status": "success", "role": "academician", "name": acc["Fullname"]})
+                log_system_access(acc.get("Fullname", u), "Akademisyen", "Giriş Başarılı")
+                return JsonResponse({"status": "success", "role": "academician", "name": acc.get("Fullname")})
         
-        return JsonResponse({"status": "error", "message": "Hatali giris bilgileri"}, status=401)
+        # Hatalı Giriş
+        log_system_access(u, "Bilinmiyor", "Hatalı Giriş Denemesi")
+        return JsonResponse({"status": "error", "message": "Hatali giris"}, status=401)
     except Exception as e: 
         return JsonResponse({"error": str(e)}, 400)
 
@@ -364,7 +379,17 @@ def api_change_password(request):
 
 @csrf_exempt
 def api_logout(request):
-    """Çıkış İşlemi (Frontend hatasını önlemek için)"""
+    """Çıkış İşlemi ve Loglama"""
+    try:
+        # Frontend'den kimin çıktığını öğrenmeye çalışıyoruz (varsa)
+        # Genelde logout body'siz atılır ama basit bir log için varsayım yapıyoruz
+        body = json.loads(request.body) if request.body else {}
+        user = body.get('username') or "Kullanıcı"
+        role = body.get('role') or "Belirsiz"
+        
+        log_system_access(user, role, "Çıkış Yapıldı")
+    except:
+        pass
     return JsonResponse({"status": "success", "message": "Cikis yapildi"})
         
 @csrf_exempt
@@ -577,7 +602,7 @@ def api_announcements(request):
 
 @csrf_exempt
 def api_messages(request):
-    """Mesajlar: Sadece ilgili kullanıcıya ait mesajları getirir"""
+    """Mesajlar: Admin hepsini görür, akademisyen sadece kendininkini"""
     if request.method == "OPTIONS": return JsonResponse({})
     
     if request.method == "POST":
@@ -585,22 +610,21 @@ def api_messages(request):
             d = json.loads(request.body)
             action = d.get("action")
 
-            # --- 1. MESAJLARI LİSTELEME (FİLTRELİ) ---
+            # --- 1. MESAJLARI LİSTELEME ---
             if action == "list":
-                # Frontend'den o anki kullanıcının adını almamız lazım
                 current_user = d.get("user") or d.get("username")
-                
-                if not current_user:
-                    return JsonResponse([], safe=False) # Kullanıcı yoksa boş dön
+                if not current_user: return JsonResponse([], safe=False)
 
+                # EĞER KULLANICI 'Yönetici' veya 'admin' İSE HEPSİNİ DÖNDÜR
+                if current_user.lower() in ["admin", "yonetici", "yönetici"]:
+                    return JsonResponse(DB['MESSAGES'], safe=False)
+
+                # DEĞİLSE FİLTRELE
                 norm_current = normalize_name(current_user)
                 filtered_messages = []
-
                 for msg in DB['MESSAGES']:
-                    # Mesajın göndereni VEYA alıcısı bu kullanıcı mı?
                     sender = normalize_name(msg.get("sender") or msg.get("from"))
                     receiver = normalize_name(msg.get("receiver") or msg.get("to"))
-                    
                     if sender == norm_current or receiver == norm_current:
                         filtered_messages.append(msg)
                 
@@ -608,22 +632,18 @@ def api_messages(request):
 
             # --- 2. MESAJ GÖNDERME ---
             if action == "send":
-                # Zaman damgası ekle
                 d['timestamp'] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-                # Mesajı veritabanına ekle
                 DB['MESSAGES'].append(d)
                 
-                # Dosyaya kaydet
                 path = find_file('messages.json')
                 if not path: path = os.path.join(BASE_DIR, 'messages.json')
                 
                 with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(DB['MESSAGES'], f, indent=4)
+                    json.dump(DB['MESSAGES'], f, indent=4, ensure_ascii=False)
                     
                 return JsonResponse({"status": "success"})
 
         except Exception as e:
-            print(f"Mesaj Hatasi: {e}")
             return JsonResponse({"error": str(e)}, 400)
             
     return JsonResponse([], safe=False)
