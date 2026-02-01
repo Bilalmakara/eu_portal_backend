@@ -244,12 +244,13 @@ load_data()
 
 
 # ==========================================
-# 5. RESİM BULUCU (IMAGE FINDER)
+# 5. RESİM BULUCU (IMAGE FINDER) - DÜZELTİLMİŞ (V4)
 # ==========================================
 def get_image_url_for_name(name):
     """
-    Resim yolunu döndürür. 
-    ÖNEMLİ: Frontend zaten base URL eklediği için burada sadece RELATIVE path dönüyoruz.
+    Resim yolunu döndürür.
+    DÜZELTME: Baştaki '/' işareti kaldırıldı.
+    Böylece Frontend kendi slash'ini eklediğinde çift slash (//) hatası oluşmayacak.
     """
     norm_name = normalize_name(name)
     slug_name = slugify_name(name) 
@@ -260,11 +261,12 @@ def get_image_url_for_name(name):
             path_val = w.get("Image_Path")
             if path_val:
                 filename = path_val.replace('\\', '/').split('/')[-1]
-                # Başına / koyarak dönüyoruz
-                return f"/akademisyen_fotograflari/{filename}"
+                # Başına '/' koymadan dönüyoruz
+                return f"akademisyen_fotograflari/{filename}"
     
     # 2. Yöntem: Tahmin
-    return f"/akademisyen_fotograflari/{slug_name}.jpg"
+    # Başına '/' koymadan dönüyoruz
+    return f"akademisyen_fotograflari/{slug_name}.jpg"
 
 
 # ==========================================
