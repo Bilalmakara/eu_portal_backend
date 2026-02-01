@@ -109,8 +109,25 @@ def find_file(filename):
 
 
 # ==========================================
-# 4. VERİ YÜKLEME (DATA LOADING)
+# 4. VERİ YÜKLEME (DATA LOADING) - DÜZELTİLMİŞ
 # ==========================================
+
+def unwrap_data(data):
+    """
+    JSON verisini analiz eder ve içindeki listeyi bulup çıkarır.
+    {"Sheet1": [...]} veya {"Data": [...]} gibi yapıları düzeltir.
+    """
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        # Sözlükse, içinde liste olan ilk değeri bul (Sheet1, data, vb.)
+        for key, value in data.items():
+            if isinstance(value, list):
+                return value
+        # Liste bulamazsa ve 'values' varsa onu dene
+        return list(data.values())
+    return []
+
 def load_data():
     global DB
     # Veri tabanı taslağı
@@ -122,86 +139,81 @@ def load_data():
 
     for key, filename in TARGET_FILES.items():
         path = find_file(filename)
-        data_key = key.upper()
-
-        # Özel Anahtar Eşleştirmeleri
-        if key == 'matches':
-            data_key = 'MATCHES'
-        elif key == 'decisions':
-            data_key = 'FEEDBACK'
-
+        
         if path:
             try:
                 with open(path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
+                    raw_json = json.load(f)
+                    
+                    # 1. ADIM: Veriyi kabuğundan çıkar (Sheet1 vb.)
+                    # Bu satır, projelerin ve web_data'nın okunmasını sağlar!
+                    data_list = unwrap_data(raw_json)
 
-                    # --- A. EŞLEŞME DOSYASI (EN KRİTİK KISIM) ---
+                    # --- A. EŞLEŞMELER (MATCHES) ---
                     if key == 'matches':
-                        # 1. Sheet yapısını çöz (Liste mi Dict mi?)
-                        raw_list = []
-                        if isinstance(data, dict):
-                            for k, v in data.items():
-                                if isinstance(v, list):
-                                    raw_list = v
-                                    break
-                        elif isinstance(data, list):
-                            raw_list = data
-
-                        # 2. Forward Fill (Hafızalı Okuma)
                         clean_matches = []
-                        last_valid_name = None  # Hafıza
+                        last_valid_name = None 
 
-                        for item in raw_list:
-                            # İsim sütununu bul
+                        for item in data_list:
+                            # İsim bul (farklı sütun adlarını dene)
                             raw_name = item.get('data') or item.get('academician_name') or item.get('Column1')
-
-                            # İsim varsa hafızayı güncelle (En az 3 harf olsun)
-                            if raw_name and len(str(raw_name)) > 2:
-                                last_valid_name = raw_name
-
-                            # İsim yoksa hafızadan kullan
+                            
+                            # İsim varsa hafızayı güncelle
+                            if raw_name:
+                                temp_check = str(raw_name).strip()
+                                # "Header" satırı değilse hafızaya al
+                                if len(temp_check) > 3 and temp_check.lower() not in ["academician_name", "data", "sheet1", "column1", "matches"]:
+                                    last_valid_name = temp_check
+                            
+                            # İsim yoksa hafızadan kullan (Forward Fill)
                             current_name = raw_name if raw_name else last_valid_name
 
-                            # Proje ID sütununu bul
+                            # Proje ID'sini bul
                             pid = str(item.get('Column3') or item.get('project_id') or "")
-
-                            # Filtreleme (Header veya boş satırları at)
+                            
+                            # Çöp verileri atla
                             if not current_name or not pid: continue
                             check_name = normalize_name(current_name)
-                            if check_name in ["ACADEMICIANNAME", "DATA", "SHEET1", "COLUMN1", "MATCHES"]: continue
-                            if pid.lower() in ["matches", "project_id", "column3"]: continue
-
-                            # Temiz veriyi kaydet
-                            item['data'] = current_name
+                            if "COLUMN" in check_name or "SHEET" in check_name or "DATA" in check_name: continue
+                            if pid.lower() in ["matches", "project_id", "column3", "column"]: continue
+                            
+                            # Temizlenmiş veriyi ekle
+                            item['data'] = current_name 
                             clean_matches.append(item)
-
+                        
                         temp_db['MATCHES'] = clean_matches
 
-                    # --- B. PROJELER ---
+                    # --- B. PROJELER (PROJECTS) ---
                     elif key == 'projects':
-                        raw = data if isinstance(data, list) else (data.values() if isinstance(data, dict) else [])
-                        for p in raw:
+                        # Artık data_list temiz bir liste olduğu için rahatça dönebiliriz
+                        for p in data_list:
                             pid = str(p.get("project_id", "")).strip()
+                            # ID varsa kaydet
                             if pid: temp_db['PROJECTS'][pid] = p
 
-                    # --- C. AKADEMİSYENLER ---
+                    # --- C. AKADEMİSYENLER (ACADEMICIANS) ---
                     elif key == 'academicians':
-                        for p in data:
-                            if p.get("Email"): temp_db['ACADEMICIANS'][p["Email"].strip().lower()] = p
+                        for p in data_list:
+                            email = p.get("Email")
+                            if email: temp_db['ACADEMICIANS'][email.strip().lower()] = p
 
-                    # --- D. KARARLAR (FEEDBACK) ---
+                    # --- D. RESİM YOLLARI (WEB_DATA) ---
+                    elif key == 'web_data':
+                        temp_db['WEB_DATA'] = data_list
+
+                    # --- E. KARARLAR (FEEDBACK) ---
                     elif key == 'decisions':
-                        temp_db['FEEDBACK'] = data
-
-                    # --- E. DİĞERLERİ ---
+                        # Kararlar genelde düz liste gelir ama yine de unwrap edelim
+                        temp_db['FEEDBACK'] = data_list
+                    
+                    # --- F. DİĞERLERİ ---
                     else:
-                        temp_db[data_key] = data
+                        temp_db[key.upper()] = data_list
 
             except Exception as e:
                 print(f"HATA - {filename}: {e}")
-
+    
     DB = temp_db
-
 
 # Uygulama başlarken verileri yükle
 load_data()
