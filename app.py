@@ -240,21 +240,23 @@ def get_image_url_for_name(name):
     İki aşamalı resim bulma:
     1. web_data.json'daki yola bak.
     2. Bulamazsa isimden tahmin et (ugurozdemir.jpg).
+    
+    DÜZELTME: Artık BASE_URL (https://...) eklemiyoruz. Sadece yolu dönüyoruz.
     """
     norm_name = normalize_name(name)
-    slug_name = slugify_name(name)  # Örn: Ali Veli -> aliveli
-
+    slug_name = slugify_name(name) 
+    
     # 1. Yöntem: Web Data
     for w in DB['WEB_DATA']:
         if normalize_name(w.get("Fullname")) == norm_name:
             path_val = w.get("Image_Path")
             if path_val:
-                # "C:\Users\...\akademisyen_fotograflari\foto.jpg" -> "foto.jpg"
+                # Sadece dosya adını al ve temiz yola çevir
                 filename = path_val.replace('\\', '/').split('/')[-1]
-                return f"{BASE_URL}/akademisyen_fotograflari/{filename}"
-
+                return f"/akademisyen_fotograflari/{filename}"
+    
     # 2. Yöntem: Tahmin (Fallback)
-    return f"{BASE_URL}/akademisyen_fotograflari/{slug_name}.jpg"
+    return f"/akademisyen_fotograflari/{slug_name}.jpg"
 
 
 # ==========================================
@@ -319,7 +321,7 @@ def api_login(request):
 
 @csrf_exempt
 def api_reset_password(request):
-    """Şifre Sıfırlama ve Kaydetme"""
+    """Şifre Sıfırlama ve Kaydetme (Düzeltilmiş)"""
     if request.method == "OPTIONS": return JsonResponse({})
     try:
         d = json.loads(request.body)
@@ -331,13 +333,20 @@ def api_reset_password(request):
             # 1. Hafızayı Güncelle
             DB['PASSWORDS'][u] = new_p
             
-            # 2. Dosyayı Güncelle (List of Dict formatında kaydet ki load_data bozulmasın)
-            # Mevcut hafızadaki {email: şifre} yapısını tekrar dosya formatına [{email:.., password:..}] çeviriyoruz
+            # 2. Dosyayı Güncelle
             save_list = [{"email": email, "password": password} for email, password in DB['PASSWORDS'].items()]
             
-            save_path = find_file('passwords.json') or os.path.join(BASE_DIR, 'passwords.json')
-            with open(save_path, 'w', encoding='utf-8') as f:
-                json.dump(save_list, f, indent=4)
+            # Dosya yolunu bul veya yoksa oluştur
+            save_path = find_file('passwords.json')
+            if not save_path:
+                save_path = os.path.join(BASE_DIR, 'passwords.json')
+            
+            try:
+                with open(save_path, 'w', encoding='utf-8') as f:
+                    json.dump(save_list, f, indent=4)
+            except Exception as file_error:
+                print(f"Dosya Yazma Hatasi: {file_error}")
+                # Dosya yazılamasa bile hafızada değiştiği için 'success' dönüyoruz ki kullanıcı takılmasın
                 
             return JsonResponse({"status": "success", "message": "Sifre basariyla guncellendi"})
             
@@ -347,7 +356,7 @@ def api_reset_password(request):
         
 @csrf_exempt
 def api_admin_data(request):
-    """Yönetici Paneli Verileri (Resim Düzeltildi)"""
+    """Yönetici Paneli Verileri"""
     if request.method == "OPTIONS": return JsonResponse({})
     
     acc_list = []
@@ -372,15 +381,19 @@ def api_admin_data(request):
                 if s > best_score: best_score = s
             except: pass
             
-        # BURASI ÖNEMLİ: Resim bulma fonksiyonunu burada da kullanıyoruz
-        image_url = get_image_url_for_name(name)
-
+        # Resim yolunu al (Artık başında https:// YOK)
+        image_path = get_image_url_for_name(name)
+        
+        # Frontend'e tam link göndermek gerekiyorsa burada birleştirebiliriz
+        # AMA senin hatan "çift link" olduğu için, frontend zaten ekleme yapıyor demektir.
+        # O yüzden burayı da "image_path" olarak bırakıyoruz.
+        
         acc_list.append({
             "name": name,
             "email": email,
             "project_count": len(my_matches),
             "best_score": best_score,
-            "image": image_url  # <-- Düzeltilmiş resim yolu
+            "image": image_path 
         })
     
     return JsonResponse({
