@@ -109,106 +109,108 @@ def find_file(filename):
 
 
 # ==========================================
-# 4. VERİ YÜKLEME (DATA LOADING) - DÜZELTİLMİŞ
+# 4. VERİ YÜKLEME (DATA LOADING) - MULTI-SHEET DESTEKLİ
 # ==========================================
 
-def unwrap_data(data):
+def get_all_rows(data):
     """
-    JSON verisini analiz eder ve içindeki listeyi bulup çıkarır.
-    {"Sheet1": [...]} veya {"Data": [...]} gibi yapıları düzeltir.
+    JSON içindeki 'Sheet1', 'Sheet1 (2)' gibi tüm listeleri bulur ve
+    tek bir dev listede birleştirir. Böylece tüm sayfalar okunur.
     """
+    all_rows = []
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
-        # Sözlükse, içinde liste olan ilk değeri bul (Sheet1, data, vb.)
+        # Sözlükse, içindeki tüm listeleri (Sheet'leri) topla
         for key, value in data.items():
             if isinstance(value, list):
-                return value
-        # Liste bulamazsa ve 'values' varsa onu dene
-        return list(data.values())
-    return []
+                all_rows.extend(value)
+    return all_rows
 
 def load_data():
     global DB
     # Veri tabanı taslağı
-    temp_db = {
-        'PROJECTS': {}, 'ACADEMICIANS': {}, 'MATCHES': [],
-        'FEEDBACK': [], 'WEB_DATA': [], 'MESSAGES': [],
-        'ANNOUNCEMENTS': [], 'LOGS': [], 'PASSWORDS': {}
+    temp_db = { 
+        'PROJECTS': {}, 'ACADEMICIANS': {}, 'MATCHES': [], 
+        'FEEDBACK': [], 'WEB_DATA': [], 'MESSAGES': [], 
+        'ANNOUNCEMENTS': [], 'LOGS': [], 'PASSWORDS': {} 
     }
-
+    
     for key, filename in TARGET_FILES.items():
         path = find_file(filename)
+        
+        # Dosya türüne göre anahtar belirleme
+        data_key = key.upper()
+        if key == 'matches': data_key = 'MATCHES'
+        elif key == 'decisions': data_key = 'FEEDBACK'
         
         if path:
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     raw_json = json.load(f)
                     
-                    # 1. ADIM: Veriyi kabuğundan çıkar (Sheet1 vb.)
-                    # Bu satır, projelerin ve web_data'nın okunmasını sağlar!
-                    data_list = unwrap_data(raw_json)
-
-                    # --- A. EŞLEŞMELER (MATCHES) ---
+                    # --- A. EŞLEŞMELER (MATCHES) - KRİTİK DÜZELTME ---
                     if key == 'matches':
+                        # 1. Bütün sayfalardaki verileri (Sheet1, Sheet1 (2)...) birleştir
+                        raw_list = get_all_rows(raw_json)
+                        
                         clean_matches = []
-                        last_valid_name = None 
+                        last_valid_name = None # Hafıza (Forward Fill için)
 
-                        for item in data_list:
-                            # İsim bul (farklı sütun adlarını dene)
-                            raw_name = item.get('data') or item.get('academician_name') or item.get('Column1')
+                        for item in raw_list:
+                            # 2. İsim verisini çek ('data' sütunu)
+                            # Bazen 'academician_name' başlığı veri gibi gelebilir, onu altta filtreleyeceğiz
+                            raw_name = item.get('data')
                             
-                            # İsim varsa hafızayı güncelle
+                            # İsim varsa hafızayı güncelle (En az 3 harfli ve 'header' değilse)
                             if raw_name:
                                 temp_check = str(raw_name).strip()
-                                # "Header" satırı değilse hafızaya al
+                                # Header kelimelerini filtrele
                                 if len(temp_check) > 3 and temp_check.lower() not in ["academician_name", "data", "sheet1", "column1", "matches"]:
                                     last_valid_name = temp_check
                             
-                            # İsim yoksa hafızadan kullan (Forward Fill)
+                            # 3. İsim bu satırda yoksa hafızadakini kullan (Birleştirilmiş hücre mantığı)
                             current_name = raw_name if raw_name else last_valid_name
 
-                            # Proje ID'sini bul
-                            pid = str(item.get('Column3') or item.get('project_id') or "")
+                            # 4. Proje ID'sini çek ('Column3')
+                            pid = str(item.get('Column3') or item.get('project_id') or "").strip()
                             
-                            # Çöp verileri atla
+                            # 5. Filtreleme: İsim veya ID yoksa atla
                             if not current_name or not pid: continue
+                            
+                            # Header (Başlık) satırlarını atla
                             check_name = normalize_name(current_name)
-                            if "COLUMN" in check_name or "SHEET" in check_name or "DATA" in check_name: continue
+                            if "COLUMN" in check_name or "ACADEMICIAN" in check_name or "SHEET" in check_name: continue
                             if pid.lower() in ["matches", "project_id", "column3", "column"]: continue
                             
-                            # Temizlenmiş veriyi ekle
-                            item['data'] = current_name 
+                            # Temiz veriyi listeye ekle
+                            item['data'] = current_name # İsmi düzeltilmiş haliyle kaydet
                             clean_matches.append(item)
                         
                         temp_db['MATCHES'] = clean_matches
 
-                    # --- B. PROJELER (PROJECTS) ---
+                    # --- B. PROJELER ---
                     elif key == 'projects':
-                        # Artık data_list temiz bir liste olduğu için rahatça dönebiliriz
-                        for p in data_list:
+                        # Projeler de Sheet içinde olabilir, hepsini alalım
+                        raw_list = get_all_rows(raw_json)
+                        for p in raw_list:
                             pid = str(p.get("project_id", "")).strip()
-                            # ID varsa kaydet
                             if pid: temp_db['PROJECTS'][pid] = p
 
-                    # --- C. AKADEMİSYENLER (ACADEMICIANS) ---
+                    # --- C. AKADEMİSYENLER ---
                     elif key == 'academicians':
-                        for p in data_list:
-                            email = p.get("Email")
-                            if email: temp_db['ACADEMICIANS'][email.strip().lower()] = p
-
+                        raw_list = get_all_rows(raw_json)
+                        for p in raw_list:
+                            if p.get("Email"): temp_db['ACADEMICIANS'][p["Email"].strip().lower()] = p
+                    
                     # --- D. RESİM YOLLARI (WEB_DATA) ---
                     elif key == 'web_data':
-                        temp_db['WEB_DATA'] = data_list
+                        temp_db['WEB_DATA'] = get_all_rows(raw_json)
 
-                    # --- E. KARARLAR (FEEDBACK) ---
-                    elif key == 'decisions':
-                        # Kararlar genelde düz liste gelir ama yine de unwrap edelim
-                        temp_db['FEEDBACK'] = data_list
-                    
-                    # --- F. DİĞERLERİ ---
+                    # --- E. DİĞERLERİ ---
                     else:
-                        temp_db[key.upper()] = data_list
+                        # Diğer dosyalar (decisions, announcements vb.) genelde düz listedir ama yine de garanti olsun
+                        temp_db[data_key] = get_all_rows(raw_json)
 
             except Exception as e:
                 print(f"HATA - {filename}: {e}")
