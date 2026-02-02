@@ -362,10 +362,10 @@ def api_logout(request):
         
 @csrf_exempt
 def api_admin_data(request):
-    """Yönetici Paneli: Hem eski hem yeni log formatını destekleyen sürüm"""
+    """Yönetici Paneli: Kayıtları Tarihe Göre (Yeniden Eskiye) Sıralar"""
     if request.method == "OPTIONS": return JsonResponse({})
     
-    # 1. Akademisyen Listesi (Aynı kalıyor)
+    # 1. Akademisyen Listesi
     acc_list = []
     matches_map = {} 
     for m in DB.get('MATCHES', []):
@@ -386,14 +386,13 @@ def api_admin_data(request):
             "image": image_path 
         })
     
-    # 2. LOGLARI DÜZELTME (Kritik Kısım)
+    # 2. LOGLARI DÜZELTME VE SIRALAMA (KRİTİK KISIM)
     raw_logs = DB.get('LOGS', [])
     if not isinstance(raw_logs, list): raw_logs = []
     
     safe_logs = []
     for log in raw_logs:
-        # Hem Türkçe (Yeni) hem İngilizce (Eski) anahtarları kontrol et
-        # Eğer "Saat" yoksa "timestamp"e bak, o da yoksa "-" koy.
+        # Veri temizleme (Eski ve Yeni format uyumu)
         t_saat = str(log.get("Saat") or log.get("timestamp") or "-")
         t_kullanici = str(log.get("Kullanıcı") or log.get("name") or log.get("username") or "Bilinmiyor")
         t_rol = str(log.get("Rol") or log.get("role") or "-")
@@ -406,8 +405,10 @@ def api_admin_data(request):
             "İşlem": t_islem
         })
     
-    # En yeni kayıt en üstte
-    safe_logs.reverse()
+    # --- TARİHE GÖRE SIRALAMA ---
+    # Python'da YYYY-MM-DD HH:MM:SS formatı string olarak düzgün sıralanır.
+    # reverse=True diyerek EN BÜYÜK (En yeni) tarihi en başa alıyoruz.
+    safe_logs.sort(key=lambda x: x['Saat'], reverse=True)
 
     return JsonResponse({
         "academicians": acc_list,
