@@ -439,14 +439,14 @@ def api_admin_data(request):
 
 @csrf_exempt
 def api_profile(request):
-    """Akademisyen Profil, Resim ve Telefon"""
+    """Akademisyen Profil, Resim ve Telefon (Telefon Formatı Düzeltildi)"""
     if request.method == "OPTIONS": return JsonResponse({})
     try:
         body = json.loads(request.body)
         name = body.get('name')
         norm_name = normalize_name(name)
         
-        # 1. Akademisyen Bilgisi (academicians.json'dan)
+        # 1. Akademisyen Bilgisi
         acc = None
         for email, p in DB['ACADEMICIANS'].items():
             if normalize_name(p.get("Fullname")) == norm_name:
@@ -454,43 +454,52 @@ def api_profile(request):
                 break
         if not acc: return JsonResponse({"error": "Bulunamadi"}, 404)
 
-        # 2. Web Data'dan Ek Bilgiler (Resim ve Telefon)
+        # 2. Web Data'dan Ek Bilgiler
         img_url = None
         phone_number = "-" # Varsayılan boş
         
-        # Web Data içinde bu hocayı ara
         for w in DB['WEB_DATA']:
             if normalize_name(w.get("Fullname")) == norm_name:
-                # A. Resim Yolu
+                # Resim
                 path_val = w.get("Image_Path")
                 if path_val:
                     filename = path_val.replace('\\', '/').split('/')[-1]
-                    img_url = f"{BASE_URL}/akademisyen_fotograflari/{filename}"
+                    # Başına / koymuyoruz, frontend hallediyor
+                    img_url = f"akademisyen_fotograflari/{filename}"
                 
-                # B. Telefon Numarası (Olası sütun isimleri)
-                phone_number = w.get("Work_Phone") or w.get("Phone") or w.get("Telefon") or "-"
+                # --- TELEFON DÜZELTME KISMI ---
+                raw_phone = w.get("Work_Phone") or w.get("Phone") or w.get("Telefon") or "-"
+                
+                # Eğer numara " / -" veya " /" ile bitiyorsa temizle
+                # Örn: "+90 (222) 213 77 77 / -"  ---> "+90 (222) 213 77 77" olur
+                if "/ -" in raw_phone:
+                    phone_number = raw_phone.replace("/ -", "").strip()
+                elif raw_phone.endswith("/"):
+                    phone_number = raw_phone.rstrip("/").strip()
+                else:
+                    phone_number = raw_phone
                 break
         
-        # Eğer web_data'da resim yoksa isimden tahmin et
         if not img_url:
             slug_name = slugify_name(name)
-            img_url = f"{BASE_URL}/akademisyen_fotograflari/{slug_name}.jpg"
+            img_url = f"akademisyen_fotograflari/{slug_name}.jpg"
 
-        # 3. Projeleri Bul (Aynı kalıyor)
+        # 3. Projeleri Bul (Değişmedi)
         projects = []
-        for m in DB['MATCHES']:
+        for m in DB.get('MATCHES', []):
             if normalize_name(m.get('data')) == norm_name:
                 pid = str(m.get('Column3') or m.get('project_id') or "")
                 pd = DB['PROJECTS'].get(pid, {})
                 
                 decision = "waiting"
-                for fb in DB['FEEDBACK']:
+                # Feedback kontrolü
+                for fb in DB.get('FEEDBACK', []):
                     if normalize_name(fb.get("academician")) == norm_name and str(fb.get("projId")) == pid:
                         decision = fb.get("decision")
                         break
                 
                 collaborators = []
-                for fb in DB['FEEDBACK']:
+                for fb in DB.get('FEEDBACK', []):
                     if str(fb.get("projId")) == pid and fb.get("decision") == "accepted":
                          if normalize_name(fb.get("academician")) != norm_name:
                             collaborators.append(fb.get("academician"))
@@ -498,7 +507,7 @@ def api_profile(request):
                 projects.append({
                     "id": pid,
                     "title": pd.get("title") or pd.get("acronym") or f"Proje-{pid}",
-                    "score": int(m.get('Column7') or m.get('score') or 0),
+                    "score": int(float(m.get('Column7') or m.get('score') or 0)),
                     "budget": pd.get("overall_budget", "-"),
                     "status": pd.get("status", "-"),
                     "objective": (pd.get("objective") or "")[:200] + "...",
@@ -517,12 +526,11 @@ def api_profile(request):
                 "Field": acc.get("Field"),
                 "Image": img_url,
                 "Duties": acc.get("Duties", []),
-                "Phone": phone_number  # <-- Telefon eklendi
+                "Phone": phone_number 
             },
             "projects": projects
         })
     except Exception as e: return JsonResponse({"error": str(e)}, 500)
-
 
 @csrf_exempt
 def api_project_decision(request):
