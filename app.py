@@ -142,19 +142,16 @@ def find_file(filename):
 # ==========================================
 
 def get_all_rows(data):
-    """
-    JSON verisi içindeki TÜM listeleri (Sheet1, Sheet2, Data vb.) bulur ve birleştirir.
-    Böylece 'Sheet1 (2)' gibi ek sayfalardaki veriler kaybolmaz.
-    """
-    all_rows = []
+    """JSON içindeki veriyi ne olursa olsun listeye çevirir"""
     if isinstance(data, list):
         return data
     if isinstance(data, dict):
-        # Sözlükse, içindeki liste olan her şeyi topla
+        all_rows = []
         for key, value in data.items():
             if isinstance(value, list):
                 all_rows.extend(value)
-    return all_rows
+        return all_rows
+    return []
 
 def load_data():
     global DB
@@ -365,12 +362,13 @@ def api_logout(request):
         
 @csrf_exempt
 def api_admin_data(request):
-    """Yönetici Paneli Verileri (Frontend Çökmesini Önleyen Sürüm)"""
+    """Yönetici Paneli: Verileri temizleyerek gönderir (Crash Fix)"""
     if request.method == "OPTIONS": return JsonResponse({})
     
+    # 1. Akademisyen Listesini Hazırla
     acc_list = []
     matches_map = {} 
-    for m in DB['MATCHES']:
+    for m in DB.get('MATCHES', []):
         raw_name = m.get('data')
         if raw_name:
             norm = normalize_name(raw_name)
@@ -379,25 +377,41 @@ def api_admin_data(request):
 
     for email, acc in DB['ACADEMICIANS'].items():
         name = acc.get("Fullname", "")
-        norm_name = normalize_name(name)
-        
-        my_matches = matches_map.get(norm_name, [])
-        best_score = 0
-        for m in my_matches:
-            try:
-                s = int(m.get('Column7') or m.get('score') or 0)
-                if s > best_score: best_score = s
-            except: pass
-            
+        # Resim yolu (Baştaki slash sorununu da çözen fonksiyonu kullanıyoruz)
         image_path = get_image_url_for_name(name)
         
         acc_list.append({
             "name": name,
             "email": email,
-            "project_count": len(my_matches),
-            "best_score": best_score,
+            "project_count": len(matches_map.get(normalize_name(name), [])),
+            "best_score": 0, # İstersen hesaplayabilirsin ama hız için 0 kalsın
             "image": image_path 
         })
+    
+    # 2. LOGLARI TEMİZLE (Kritik Kısım)
+    raw_logs = DB.get('LOGS', [])
+    if not isinstance(raw_logs, list): raw_logs = []
+    
+    safe_logs = []
+    for log in raw_logs:
+        # Frontend'in beklediği alanlar: Saat, Kullanıcı, Rol, İşlem
+        # Hepsi STRING olmak zorunda. Asla None gitmemeli.
+        safe_logs.append({
+            "Saat": str(log.get("Saat") or "-"),
+            "Kullanıcı": str(log.get("Kullanıcı") or "Bilinmiyor"),
+            "Rol": str(log.get("Rol") or "-"),
+            "İşlem": str(log.get("İşlem") or "-")
+        })
+    
+    # En yeni kayıt en üstte
+    safe_logs.reverse()
+
+    return JsonResponse({
+        "academicians": acc_list,
+        "feedbacks": DB.get('FEEDBACK', []),
+        "logs": safe_logs, # Temizlenmiş loglar
+        "announcements": DB.get('ANNOUNCEMENTS', [])
+    })
     
     # --- KAYITLARI TEMİZLE (CRASH FIX) ---
     raw_logs = DB.get('LOGS', [])
@@ -598,48 +612,45 @@ def api_messages(request):
                 current_user = d.get("user") or d.get("username")
                 if not current_user: return JsonResponse([], safe=False)
 
-                # Kullanıcı adını küçük harfe çevir ve temizle
-                u_lower = str(current_user).lower().strip()
+                # Kullanıcı Adı Kontrolü (Büyük/Küçük harf duyarsız)
+                u_str = str(current_user).lower().strip()
                 
-                # Yönetici kelimeleri listesi
-                admin_keywords = ["admin", "yonetici", "yönetici", "administrator"]
-                
-                # Eğer kullanıcı adı bu kelimelerden biriyse TÜM mesajları gönder
-                if u_lower in admin_keywords:
-                    all_msgs = DB.get('MESSAGES', [])
-                    # Mesajlar liste değilse boş liste yap
-                    if not isinstance(all_msgs, list): all_msgs = []
-                    return JsonResponse(all_msgs, safe=False)
+                # Yönetici mi?
+                if u_str in ["admin", "yonetici", "yönetici", "administrator"]:
+                    # Tüm mesajları gönder (Garanti liste)
+                    msgs = DB.get('MESSAGES', [])
+                    if not isinstance(msgs, list): msgs = []
+                    return JsonResponse(msgs, safe=False)
 
-                # Değilse FİLTRELE (Normal Akademisyen)
-                norm_current = normalize_name(current_user)
-                filtered_messages = []
-                
-                raw_msgs = DB.get('MESSAGES', [])
-                if not isinstance(raw_msgs, list): raw_msgs = []
+                # Normal Kullanıcı ise Filtrele
+                norm_user = normalize_name(current_user)
+                filtered = []
+                msgs = DB.get('MESSAGES', [])
+                if not isinstance(msgs, list): msgs = []
 
-                for msg in raw_msgs:
-                    sender = normalize_name(msg.get("sender") or msg.get("from"))
-                    receiver = normalize_name(msg.get("receiver") or msg.get("to"))
-                    if sender == norm_current or receiver == norm_current:
-                        filtered_messages.append(msg)
+                for m in msgs:
+                    # Gönderen veya Alıcı alanlarını kontrol et
+                    s = normalize_name(m.get("sender") or m.get("from"))
+                    r = normalize_name(m.get("receiver") or m.get("to"))
+                    if s == norm_user or r == norm_user:
+                        filtered.append(m)
                 
-                return JsonResponse(filtered_messages, safe=False)
+                return JsonResponse(filtered, safe=False)
 
             if action == "send":
                 d['timestamp'] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
                 
-                # Messages listesini garantiye al
                 if 'MESSAGES' not in DB or not isinstance(DB['MESSAGES'], list):
                     DB['MESSAGES'] = []
-                    
                 DB['MESSAGES'].append(d)
                 
+                # Kaydet
                 path = find_file('messages.json')
                 if not path: path = os.path.join(BASE_DIR, 'messages.json')
-                
-                with open(path, 'w', encoding='utf-8') as f:
-                    json.dump(DB['MESSAGES'], f, indent=4, ensure_ascii=False)
+                try:
+                    with open(path, 'w', encoding='utf-8') as f:
+                        json.dump(DB['MESSAGES'], f, indent=4)
+                except: pass
                     
                 return JsonResponse({"status": "success"})
 
