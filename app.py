@@ -362,11 +362,12 @@ def api_logout(request):
         
 @csrf_exempt
 def api_admin_data(request):
-    """Yönetici Paneli: Kayıtları Tarihe Göre (Yeniden Eskiye) Sıralar"""
+    """Yönetici Paneli: Puanlama hatası düzeltildi"""
     if request.method == "OPTIONS": return JsonResponse({})
     
-    # 1. Akademisyen Listesi
     acc_list = []
+    
+    # 1. Eşleşmeleri İsimlere Göre Grupla
     matches_map = {} 
     for m in DB.get('MATCHES', []):
         raw_name = m.get('data')
@@ -375,39 +376,57 @@ def api_admin_data(request):
             if norm not in matches_map: matches_map[norm] = []
             matches_map[norm].append(m)
 
+    # 2. Akademisyenleri Döngüye Al
     for email, acc in DB['ACADEMICIANS'].items():
         name = acc.get("Fullname", "")
+        norm_name = normalize_name(name)
+        
+        my_matches = matches_map.get(norm_name, [])
+        best_score = 0
+        
+        # --- PUAN HESAPLAMA (GÜÇLENDİRİLMİŞ) ---
+        for m in my_matches:
+            try:
+                # Olası sütun isimlerini dene (Column7 = Score)
+                raw_score = m.get('Column7') or m.get('score') or m.get('puan') or 0
+                
+                # Eğer veri string ise temizle
+                if isinstance(raw_score, str):
+                    raw_score = raw_score.replace('%', '').strip()
+                
+                # Önce float'a, sonra int'e çevir (Örn: "95.0" -> 95.0 -> 95)
+                # Direkt int("95.0") hataya sebep olur, bu yöntem en güvenlisidir.
+                s = int(float(raw_score))
+                
+                if s > best_score: best_score = s
+            except:
+                # Hata olursa (örn: veri boşsa) bu projeyi atla
+                pass
+            
         image_path = get_image_url_for_name(name)
+        
         acc_list.append({
             "name": name,
             "email": email,
-            "project_count": len(matches_map.get(normalize_name(name), [])),
-            "best_score": 0,
+            "project_count": len(my_matches),
+            "best_score": best_score, # Artık doğru hesaplanmış puan gidecek
             "image": image_path 
         })
     
-    # 2. LOGLARI DÜZELTME VE SIRALAMA (KRİTİK KISIM)
+    # 3. Logları Hazırla (Eski/Yeni uyumlu)
     raw_logs = DB.get('LOGS', [])
     if not isinstance(raw_logs, list): raw_logs = []
     
     safe_logs = []
     for log in raw_logs:
-        # Veri temizleme (Eski ve Yeni format uyumu)
-        t_saat = str(log.get("Saat") or log.get("timestamp") or "-")
-        t_kullanici = str(log.get("Kullanıcı") or log.get("name") or log.get("username") or "Bilinmiyor")
-        t_rol = str(log.get("Rol") or log.get("role") or "-")
-        t_islem = str(log.get("İşlem") or log.get("action") or "-")
-
         safe_logs.append({
-            "Saat": t_saat,
-            "Kullanıcı": t_kullanici,
-            "Rol": t_rol,
-            "İşlem": t_islem
+            "Saat": str(log.get("Saat") or log.get("timestamp") or "-"),
+            "Kullanıcı": str(log.get("Kullanıcı") or log.get("name") or log.get("username") or "Bilinmiyor"),
+            "Rol": str(log.get("Rol") or log.get("role") or "-"),
+            "İşlem": str(log.get("İşlem") or log.get("action") or "-")
         })
     
-    # --- TARİHE GÖRE SIRALAMA ---
-    # Python'da YYYY-MM-DD HH:MM:SS formatı string olarak düzgün sıralanır.
-    # reverse=True diyerek EN BÜYÜK (En yeni) tarihi en başa alıyoruz.
+    # Tarihe göre sırala (En yeni en üstte)
     safe_logs.sort(key=lambda x: x['Saat'], reverse=True)
 
     return JsonResponse({
@@ -416,6 +435,7 @@ def api_admin_data(request):
         "logs": safe_logs,
         "announcements": DB.get('ANNOUNCEMENTS', [])
     })
+
 
 @csrf_exempt
 def api_profile(request):
