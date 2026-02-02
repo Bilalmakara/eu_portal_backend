@@ -439,14 +439,14 @@ def api_admin_data(request):
 
 @csrf_exempt
 def api_profile(request):
-    """Akademisyen Profil, Resim ve Telefon (Telefon Formatı Düzeltildi)"""
+    """Akademisyen Profil: E-Posta ile Kesin Eşleşme ve Ham Telefon Verisi"""
     if request.method == "OPTIONS": return JsonResponse({})
     try:
         body = json.loads(request.body)
         name = body.get('name')
         norm_name = normalize_name(name)
         
-        # 1. Akademisyen Bilgisi
+        # 1. Akademisyen Bilgisi (Veritabanından Bul)
         acc = None
         for email, p in DB['ACADEMICIANS'].items():
             if normalize_name(p.get("Fullname")) == norm_name:
@@ -454,32 +454,44 @@ def api_profile(request):
                 break
         if not acc: return JsonResponse({"error": "Bulunamadi"}, 404)
 
-        # 2. Web Data'dan Ek Bilgiler
+        # 2. Web Data'dan Ek Bilgiler (Resim ve Telefon)
         img_url = None
-        phone_number = "-" # Varsayılan boş
+        phone_number = "-" # Varsayılan
         
-        for w in DB['WEB_DATA']:
-            if normalize_name(w.get("Fullname")) == norm_name:
-                # Resim
+        # Akademisyenin E-postasını al (Eşleşme için en güvenli yol)
+        acc_email = acc.get("Email", "").strip().lower()
+
+        for w in DB.get('WEB_DATA', []):
+            # Web Data'daki E-posta ve İsim
+            w_email = str(w.get("Email", "")).strip().lower()
+            w_name = normalize_name(w.get("Fullname"))
+            
+            # EŞLEŞME KONTROLÜ:
+            # 1. E-posta tutuyor mu? (Kesin çözüm)
+            # 2. VEYA İsim tutuyor mu? (Yedek çözüm)
+            match_found = False
+            if acc_email and w_email and acc_email == w_email:
+                match_found = True
+            elif w_name == norm_name:
+                match_found = True
+                
+            if match_found:
+                # A. Resim Yolu
                 path_val = w.get("Image_Path")
                 if path_val:
                     filename = path_val.replace('\\', '/').split('/')[-1]
-                    # Başına / koymuyoruz, frontend hallediyor
                     img_url = f"akademisyen_fotograflari/{filename}"
                 
-                # --- TELEFON DÜZELTME KISMI ---
-                raw_phone = w.get("Work_Phone") or w.get("Phone") or w.get("Telefon") or "-"
+                # B. Telefon Numarası (Kullanıcı isteği: Direkt aynısı gelsin)
+                # Veritabanındaki "Work_Phone" neyse, harfi harfine o gelir.
+                val_phone = w.get("Work_Phone") or w.get("Phone") or w.get("Telefon")
+                if val_phone:
+                    phone_number = str(val_phone)
                 
-                # Eğer numara " / -" veya " /" ile bitiyorsa temizle
-                # Örn: "+90 (222) 213 77 77 / -"  ---> "+90 (222) 213 77 77" olur
-                if "/ -" in raw_phone:
-                    phone_number = raw_phone.replace("/ -", "").strip()
-                elif raw_phone.endswith("/"):
-                    phone_number = raw_phone.rstrip("/").strip()
-                else:
-                    phone_number = raw_phone
+                # Eşleşme bulundu, döngüden çık
                 break
         
+        # Eğer resim bulunamadıysa isimden tahmin et
         if not img_url:
             slug_name = slugify_name(name)
             img_url = f"akademisyen_fotograflari/{slug_name}.jpg"
