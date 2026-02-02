@@ -158,7 +158,6 @@ def get_all_rows(data):
 
 def load_data():
     global DB
-    # Başlangıçta boş listeler oluştur (Hata önleyici)
     temp_db = { 
         'PROJECTS': {}, 'ACADEMICIANS': {}, 'MATCHES': [], 
         'FEEDBACK': [], 'WEB_DATA': [], 'MESSAGES': [], 
@@ -168,6 +167,7 @@ def load_data():
     for key, filename in TARGET_FILES.items():
         path = find_file(filename)
         data_key = key.upper()
+        # Özel anahtar isimleri
         if key == 'matches': data_key = 'MATCHES'
         elif key == 'decisions': data_key = 'FEEDBACK'
         
@@ -175,12 +175,12 @@ def load_data():
             try:
                 with open(path, 'r', encoding='utf-8') as f:
                     file_content = f.read().strip()
-                    if not file_content: continue 
+                    if not file_content: continue
                     raw_json = json.loads(file_content)
                     data_list = get_all_rows(raw_json)
 
                     if key == 'matches':
-                        # ... (Matches kodu aynı kalsın, burayı elleme) ...
+                        # ... (Buradaki kod aynı kalsın) ...
                         clean_matches = []
                         last_valid_name = None 
                         for item in data_list:
@@ -215,11 +215,11 @@ def load_data():
                             if p_email and p_pass:
                                 temp_db['PASSWORDS'][str(p_email).strip().lower()] = str(p_pass).strip()
 
-                    # BURASI DÜZELTİLDİ: Logs ve Messages doğrudan liste olarak atanır
+                    # LİSTE OLMASINI GARANTİ EDELİM
                     elif key == 'logs':
-                        temp_db['LOGS'] = data_list
+                        temp_db['LOGS'] = data_list if isinstance(data_list, list) else []
                     elif key == 'messages':
-                        temp_db['MESSAGES'] = data_list
+                        temp_db['MESSAGES'] = data_list if isinstance(data_list, list) else []
                     
                     else:
                         temp_db[data_key] = data_list
@@ -231,6 +231,7 @@ def load_data():
 
 # Uygulama başlarken yükle
 load_data()
+
 # ==========================================
 # 5. RESİM BULUCU (IMAGE FINDER) - DÜZELTİLMİŞ (V4)
 # ==========================================
@@ -364,7 +365,7 @@ def api_logout(request):
         
 @csrf_exempt
 def api_admin_data(request):
-    """Yönetici Paneli Verileri (Kayıtlar Düzeltildi)"""
+    """Yönetici Paneli Verileri (Frontend Çökmesini Önleyen Sürüm)"""
     if request.method == "OPTIONS": return JsonResponse({})
     
     acc_list = []
@@ -398,15 +399,24 @@ def api_admin_data(request):
             "image": image_path 
         })
     
-    # LOG VERİSİNİ GARANTİYE AL
-    safe_logs = DB.get('LOGS', [])
-    if not isinstance(safe_logs, list): 
-        safe_logs = []
+    # --- KAYITLARI TEMİZLE (CRASH FIX) ---
+    raw_logs = DB.get('LOGS', [])
+    if not isinstance(raw_logs, list): raw_logs = []
     
-    # EN YENİ KAYITLAR EN ÜSTTE GÖRÜNSÜN
-    # (Eğer içinde 'Saat' verisi varsa ona göre sıralayabiliriz ama şimdilik ters çevirmek yeterli)
-    if safe_logs:
-        safe_logs = list(reversed(safe_logs))
+    safe_logs = []
+    for log in raw_logs:
+        # Her alanı string'e çeviriyoruz. None ise "-" yapıyoruz.
+        # Bu işlem frontend'deki .includes() hatasını %100 çözer.
+        safe_entry = {
+            "Saat": str(log.get("Saat") or "-"),
+            "Kullanıcı": str(log.get("Kullanıcı") or "Bilinmiyor"),
+            "Rol": str(log.get("Rol") or "-"),
+            "İşlem": str(log.get("İşlem") or "-")
+        }
+        safe_logs.append(safe_entry)
+    
+    # En yeni en üstte olsun
+    safe_logs.reverse()
 
     return JsonResponse({
         "academicians": acc_list,
@@ -588,19 +598,27 @@ def api_messages(request):
                 current_user = d.get("user") or d.get("username")
                 if not current_user: return JsonResponse([], safe=False)
 
-                # DÜZELTME: "Yönetici" ismini de admin olarak kabul et
+                # Kullanıcı adını küçük harfe çevir ve temizle
                 u_lower = str(current_user).lower().strip()
+                
+                # Yönetici kelimeleri listesi
                 admin_keywords = ["admin", "yonetici", "yönetici", "administrator"]
                 
-                # Eğer kullanıcı bu kelimelerden biriyse TÜM mesajları gönder
+                # Eğer kullanıcı adı bu kelimelerden biriyse TÜM mesajları gönder
                 if u_lower in admin_keywords:
                     all_msgs = DB.get('MESSAGES', [])
+                    # Mesajlar liste değilse boş liste yap
+                    if not isinstance(all_msgs, list): all_msgs = []
                     return JsonResponse(all_msgs, safe=False)
 
-                # Değilse sadece kendi mesajlarını gönder
+                # Değilse FİLTRELE (Normal Akademisyen)
                 norm_current = normalize_name(current_user)
                 filtered_messages = []
-                for msg in DB.get('MESSAGES', []):
+                
+                raw_msgs = DB.get('MESSAGES', [])
+                if not isinstance(raw_msgs, list): raw_msgs = []
+
+                for msg in raw_msgs:
                     sender = normalize_name(msg.get("sender") or msg.get("from"))
                     receiver = normalize_name(msg.get("receiver") or msg.get("to"))
                     if sender == norm_current or receiver == norm_current:
@@ -610,6 +628,11 @@ def api_messages(request):
 
             if action == "send":
                 d['timestamp'] = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                
+                # Messages listesini garantiye al
+                if 'MESSAGES' not in DB or not isinstance(DB['MESSAGES'], list):
+                    DB['MESSAGES'] = []
+                    
                 DB['MESSAGES'].append(d)
                 
                 path = find_file('messages.json')
