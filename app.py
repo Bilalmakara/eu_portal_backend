@@ -362,10 +362,10 @@ def api_logout(request):
         
 @csrf_exempt
 def api_admin_data(request):
-    """Yönetici Paneli: Verileri temizleyerek gönderir (Crash Fix)"""
+    """Yönetici Paneli: Hem eski hem yeni log formatını destekleyen sürüm"""
     if request.method == "OPTIONS": return JsonResponse({})
     
-    # 1. Akademisyen Listesini Hazırla
+    # 1. Akademisyen Listesi (Aynı kalıyor)
     acc_list = []
     matches_map = {} 
     for m in DB.get('MATCHES', []):
@@ -377,59 +377,36 @@ def api_admin_data(request):
 
     for email, acc in DB['ACADEMICIANS'].items():
         name = acc.get("Fullname", "")
-        # Resim yolu (Baştaki slash sorununu da çözen fonksiyonu kullanıyoruz)
         image_path = get_image_url_for_name(name)
-        
         acc_list.append({
             "name": name,
             "email": email,
             "project_count": len(matches_map.get(normalize_name(name), [])),
-            "best_score": 0, # İstersen hesaplayabilirsin ama hız için 0 kalsın
+            "best_score": 0,
             "image": image_path 
         })
     
-    # 2. LOGLARI TEMİZLE (Kritik Kısım)
+    # 2. LOGLARI DÜZELTME (Kritik Kısım)
     raw_logs = DB.get('LOGS', [])
     if not isinstance(raw_logs, list): raw_logs = []
     
     safe_logs = []
     for log in raw_logs:
-        # Frontend'in beklediği alanlar: Saat, Kullanıcı, Rol, İşlem
-        # Hepsi STRING olmak zorunda. Asla None gitmemeli.
+        # Hem Türkçe (Yeni) hem İngilizce (Eski) anahtarları kontrol et
+        # Eğer "Saat" yoksa "timestamp"e bak, o da yoksa "-" koy.
+        t_saat = str(log.get("Saat") or log.get("timestamp") or "-")
+        t_kullanici = str(log.get("Kullanıcı") or log.get("name") or log.get("username") or "Bilinmiyor")
+        t_rol = str(log.get("Rol") or log.get("role") or "-")
+        t_islem = str(log.get("İşlem") or log.get("action") or "-")
+
         safe_logs.append({
-            "Saat": str(log.get("Saat") or "-"),
-            "Kullanıcı": str(log.get("Kullanıcı") or "Bilinmiyor"),
-            "Rol": str(log.get("Rol") or "-"),
-            "İşlem": str(log.get("İşlem") or "-")
+            "Saat": t_saat,
+            "Kullanıcı": t_kullanici,
+            "Rol": t_rol,
+            "İşlem": t_islem
         })
     
     # En yeni kayıt en üstte
-    safe_logs.reverse()
-
-    return JsonResponse({
-        "academicians": acc_list,
-        "feedbacks": DB.get('FEEDBACK', []),
-        "logs": safe_logs, # Temizlenmiş loglar
-        "announcements": DB.get('ANNOUNCEMENTS', [])
-    })
-    
-    # --- KAYITLARI TEMİZLE (CRASH FIX) ---
-    raw_logs = DB.get('LOGS', [])
-    if not isinstance(raw_logs, list): raw_logs = []
-    
-    safe_logs = []
-    for log in raw_logs:
-        # Her alanı string'e çeviriyoruz. None ise "-" yapıyoruz.
-        # Bu işlem frontend'deki .includes() hatasını %100 çözer.
-        safe_entry = {
-            "Saat": str(log.get("Saat") or "-"),
-            "Kullanıcı": str(log.get("Kullanıcı") or "Bilinmiyor"),
-            "Rol": str(log.get("Rol") or "-"),
-            "İşlem": str(log.get("İşlem") or "-")
-        }
-        safe_logs.append(safe_entry)
-    
-    # En yeni en üstte olsun
     safe_logs.reverse()
 
     return JsonResponse({
